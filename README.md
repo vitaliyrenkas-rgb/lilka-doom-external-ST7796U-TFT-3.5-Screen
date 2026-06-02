@@ -1,3 +1,5 @@
+# Слава Україні!
+
 # Doom для Lilka external TFT / multiboot
 
 Це пакет Doom для запуску на Lilka через SD multiboot як `doom.bin`, з виводом кадру на зовнішній ILI9488 3.5'' TFT 480x320.
