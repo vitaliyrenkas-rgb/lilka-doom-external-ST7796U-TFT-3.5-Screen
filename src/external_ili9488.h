@@ -12,14 +12,14 @@
 //   MISO -> not connected
 //   LED/BL -> external/current-limited path, not controlled here
 
-#define EXT_TFT_SCK   12
-#define EXT_TFT_MOSI  14
-#define EXT_TFT_CS    48
-#define EXT_TFT_DC    44
-#define EXT_TFT_RST   43
+#define EXT_TFT_SCK  12
+#define EXT_TFT_MOSI 14
+#define EXT_TFT_CS   48
+#define EXT_TFT_DC   44
+#define EXT_TFT_RST  43
 
-#define EXT_TFT_W     480
-#define EXT_TFT_H     320
+#define EXT_TFT_W    480
+#define EXT_TFT_H    320
 
 // Doom native framebuffer is 320x200. We present it as 480x300
 // with 10 px black bars at top and bottom, preserving aspect ratio.
@@ -35,7 +35,7 @@
 // #define DOOM_PRESENT_X 80
 // #define DOOM_PRESENT_Y 60
 
-//Compromized solution 
+//Compromized solution
 // #define DOOM_PRESENT_W = 384
 // #define DOOM_PRESENT_H = 240
 // #define DOOM_PRESENT_X = 48

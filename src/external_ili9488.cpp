@@ -55,17 +55,21 @@ static void setAddressWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     const uint16_t y2 = y + h - 1;
 
     uint8_t col[] = {
-        static_cast<uint8_t>(x >> 8), static_cast<uint8_t>(x & 0xff),
-        static_cast<uint8_t>(x2 >> 8), static_cast<uint8_t>(x2 & 0xff),
+        static_cast<uint8_t>(x >> 8),
+        static_cast<uint8_t>(x & 0xff),
+        static_cast<uint8_t>(x2 >> 8),
+        static_cast<uint8_t>(x2 & 0xff),
     };
     uint8_t row[] = {
-        static_cast<uint8_t>(y >> 8), static_cast<uint8_t>(y & 0xff),
-        static_cast<uint8_t>(y2 >> 8), static_cast<uint8_t>(y2 & 0xff),
+        static_cast<uint8_t>(y >> 8),
+        static_cast<uint8_t>(y & 0xff),
+        static_cast<uint8_t>(y2 >> 8),
+        static_cast<uint8_t>(y2 & 0xff),
     };
 
     writeCommandData(0x2A, col, sizeof(col)); // CASET
     writeCommandData(0x2B, row, sizeof(row)); // PASET
-    writeCommand(0x2C);                       // RAMWR
+    writeCommand(0x2C); // RAMWR
 }
 
 bool externalTftBegin() {
@@ -154,7 +158,9 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
     static bool barsDrawn = false;
     if (!barsDrawn) {
         drawSolidRect(0, 0, EXT_TFT_W, DOOM_PRESENT_Y, 0, 0, 0);
-        drawSolidRect(0, DOOM_PRESENT_Y + DOOM_PRESENT_H, EXT_TFT_W, EXT_TFT_H - DOOM_PRESENT_Y - DOOM_PRESENT_H, 0, 0, 0);
+        drawSolidRect(
+            0, DOOM_PRESENT_Y + DOOM_PRESENT_H, EXT_TFT_W, EXT_TFT_H - DOOM_PRESENT_Y - DOOM_PRESENT_H, 0, 0, 0
+        );
         barsDrawn = true;
     }
 
