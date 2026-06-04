@@ -110,11 +110,25 @@ void setup() {
     Serial.println("[DOOM BOOT] setup enter");
     lilka::display.setSplash(doom_splash);
     lilka::begin();
-    Serial.printf("[DOOM MEM 1] after lilka::begin heap=%u minHeap=%u maxAlloc=%u psram=%u minPsram=%u\n", ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(), ESP.getFreePsram(), ESP.getMinFreePsram());
+    Serial.printf(
+        "[DOOM MEM 1] after lilka::begin heap=%u minHeap=%u maxAlloc=%u psram=%u minPsram=%u\n",
+        ESP.getFreeHeap(),
+        ESP.getMinFreeHeap(),
+        ESP.getMaxAllocHeap(),
+        ESP.getFreePsram(),
+        ESP.getMinFreePsram()
+    );
 
     Serial.println("[DOOM TFT] externalTftBegin enter");
     externalTftBegin();
-    Serial.printf("[DOOM MEM 2] after externalTftBegin heap=%u minHeap=%u maxAlloc=%u psram=%u minPsram=%u\n", ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(), ESP.getFreePsram(), ESP.getMinFreePsram());
+    Serial.printf(
+        "[DOOM MEM 2] after externalTftBegin heap=%u minHeap=%u maxAlloc=%u psram=%u minPsram=%u\n",
+        ESP.getFreeHeap(),
+        ESP.getMinFreeHeap(),
+        ESP.getMaxAllocHeap(),
+        ESP.getFreePsram(),
+        ESP.getMinFreePsram()
+    );
 
     inputMutex = xSemaphoreCreateMutex();
     xSemaphoreGive(inputMutex);
@@ -211,13 +225,29 @@ void setup() {
 
     Serial.println("[DOOM ALLOC] D_AllocBuffers enter");
     D_AllocBuffers();
-    Serial.printf("[DOOM MEM 3] after D_AllocBuffers heap=%u minHeap=%u maxAlloc=%u psram=%u minPsram=%u\n", ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(), ESP.getFreePsram(), ESP.getMinFreePsram());
+    Serial.printf(
+        "[DOOM MEM 3] after D_AllocBuffers heap=%u minHeap=%u maxAlloc=%u psram=%u minPsram=%u\n",
+        ESP.getFreeHeap(),
+        ESP.getMinFreeHeap(),
+        ESP.getMaxAllocHeap(),
+        ESP.getFreePsram(),
+        ESP.getMinFreePsram()
+    );
     // Back buffer must be allocated before doomgeneric_Create since it calls DG_DrawFrame
     backBuffer = static_cast<uint32_t*>(malloc(DOOMGENERIC_RESX * DOOMGENERIC_RESY * 4));
-    Serial.printf("[DOOM ALLOC] backBuffer=%p bytes=%u\n", backBuffer, (unsigned)(DOOMGENERIC_RESX * DOOMGENERIC_RESY * 4));
+    Serial.printf(
+        "[DOOM ALLOC] backBuffer=%p bytes=%u\n", backBuffer, (unsigned)(DOOMGENERIC_RESX * DOOMGENERIC_RESY * 4)
+    );
     Serial.println("[DOOM CREATE] doomgeneric_Create enter");
     doomgeneric_Create(argc, argv);
-    Serial.printf("[DOOM MEM 4] after doomgeneric_Create heap=%u minHeap=%u maxAlloc=%u psram=%u minPsram=%u\n", ESP.getFreeHeap(), ESP.getMinFreeHeap(), ESP.getMaxAllocHeap(), ESP.getFreePsram(), ESP.getMinFreePsram());
+    Serial.printf(
+        "[DOOM MEM 4] after doomgeneric_Create heap=%u minHeap=%u maxAlloc=%u psram=%u minPsram=%u\n",
+        ESP.getFreeHeap(),
+        ESP.getMinFreeHeap(),
+        ESP.getMaxAllocHeap(),
+        ESP.getFreePsram(),
+        ESP.getMinFreePsram()
+    );
     if (backBuffer == NULL) {
         DG_printf("Failed to allocate back buffer\n");
         esp_restart();
