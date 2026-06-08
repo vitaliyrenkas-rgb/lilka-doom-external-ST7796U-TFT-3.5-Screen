@@ -2,6 +2,7 @@
 #include "lilka.h"
 #include "doom_splash.h"
 #include "external_ili9488.h"
+#include "esp_ota_ops.h"
 
 extern "C" {
 #include "i_sound.h"
@@ -10,6 +11,79 @@ extern "C" {
 #include "d_alloc.h"
 #include "doomstat.h"
 }
+
+#include "esp_partition.h"
+#include "esp_system.h"
+#include <SD.h> //for exit flag creation 
+
+// #include "esp_attr.h"
+
+// static constexpr uint32_t DOOM_BOOT_MAGIC = 0xD00D5EC0;
+// RTC_NOINIT_ATTR uint32_t doomBootMagic;
+// RTC_NOINIT_ATTR uint32_t doomBootMagicInv;
+
+// static void doomSecondStageResetOnce() {
+//     const bool armed =
+//         (doomBootMagic == DOOM_BOOT_MAGIC) &&
+//         (doomBootMagicInv == ~DOOM_BOOT_MAGIC);
+
+//     if (!armed) {
+//         doomBootMagic = DOOM_BOOT_MAGIC;
+//         doomBootMagicInv = ~DOOM_BOOT_MAGIC;
+//         delay(150);
+//         esp_restart();
+//     }
+
+//     doomBootMagic = 0;
+//     doomBootMagicInv = 0;
+// }
+static constexpr const char* DOOM_LAUNCH_FLAG_1 = "/doom_launch.flag";
+static constexpr const char* DOOM_LAUNCH_FLAG_2 = "doom_launch.flag";
+
+
+static void rebootToKeiraOS() {
+    const esp_partition_t* keiraPartition = esp_partition_find_first(
+        ESP_PARTITION_TYPE_APP,
+        ESP_PARTITION_SUBTYPE_APP_OTA_0,
+        nullptr
+    );
+
+    if (keiraPartition != nullptr) {
+        esp_ota_set_boot_partition(keiraPartition);
+    }
+
+    delay(100);
+    esp_restart();
+}
+
+
+static bool removeLaunchFlagIfExists(const char* path) {
+    File f = SD.open(path, FILE_READ);
+    if (!f) {
+        return false;
+    }
+
+    f.close();
+    SD.remove(path);
+    return true;
+}
+
+static bool consumeKeiraLaunchFlagOrReturn() {
+    bool consumed = false;
+
+    consumed = removeLaunchFlagIfExists(DOOM_LAUNCH_FLAG_1);
+    if (!consumed) {
+        consumed = removeLaunchFlagIfExists(DOOM_LAUNCH_FLAG_2);
+    }
+
+    if (!consumed) {
+        rebootToKeiraOS();
+        return false;
+    }
+
+    return true;
+}
+
 
 extern void doomgeneric_Create(int argc, char** argv);
 extern void doomgeneric_Tick();
@@ -44,7 +118,11 @@ void drawTask(void* arg);
 
 char nextWeaponKey = '2';
 
+volatile bool startHeld = false;
+volatile bool selectHeld = false;
+
 void buttonHandler(lilka::Button button, bool pressed) {
+    
     xSemaphoreTake(inputMutex, portMAX_DELAY);
     doomkey_t* key = &keyqueue[keyqueueWrite];
     switch (button) {
@@ -105,11 +183,19 @@ void buttonHandler(lilka::Button button, bool pressed) {
 }
 
 void setup() {
+
+    esp_ota_mark_app_valid_cancel_rollback();
+
     Serial.begin(115200);
     delay(100);
     Serial.println("[DOOM BOOT] setup enter");
     lilka::display.setSplash(doom_splash);
     lilka::begin();
+    
+    if (!consumeKeiraLaunchFlagOrReturn()) {
+    return;
+    }
+
     Serial.printf(
         "[DOOM MEM 1] after lilka::begin heap=%u minHeap=%u maxAlloc=%u psram=%u minPsram=%u\n",
         ESP.getFreeHeap(),
@@ -191,7 +277,7 @@ void setup() {
         while (!alert.isFinished()) {
             alert.update();
         }
-        esp_restart();
+        rebootToKeiraOS();
     }
     char* argv[3] = {arg, arg2, arg3};
 
@@ -250,7 +336,7 @@ void setup() {
     );
     if (backBuffer == NULL) {
         DG_printf("Failed to allocate back buffer\n");
-        esp_restart();
+        rebootToKeiraOS();
     }
 
     lilka::controller.setGlobalHandler(buttonHandler);
