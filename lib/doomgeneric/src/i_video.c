@@ -125,6 +125,7 @@ typedef struct
 // Palette converted to RGB565
 
 static uint16_t rgb565_palette[256];
+static uint8_t rgb888_palette[256][3];
 
 void cmap_to_rgb565(uint16_t * out, uint8_t * in, int in_pixels)
 {
@@ -144,6 +145,23 @@ void cmap_to_rgb565(uint16_t * out, uint8_t * in, int in_pixels)
         for (j = 0; j < fb_scaling; j++) {
             out++;
         }
+    }
+}
+
+void cmap_to_rgb888_packed(uint8_t * out, uint8_t * in, int in_pixels)
+{
+    int i, k;
+
+    for (i = 0; i < in_pixels; i++)
+    {
+        const uint8_t *rgb = rgb888_palette[*in];
+
+        for (k = 0; k < fb_scaling; k++) {
+            *out++ = rgb[0];
+            *out++ = rgb[1];
+            *out++ = rgb[2];
+        }
+        in++;
     }
 }
 
@@ -183,17 +201,18 @@ void I_InitGraphics (void)
 	s_Fb.yres = DOOMGENERIC_RESY;
 	s_Fb.xres_virtual = s_Fb.xres;
 	s_Fb.yres_virtual = s_Fb.yres;
-	s_Fb.bits_per_pixel = 32;
+	s_Fb.bits_per_pixel = DOOMGENERIC_FRAMEBUFFER_BPP;
 
-	s_Fb.blue.length = 8;
-	s_Fb.green.length = 8;
 	s_Fb.red.length = 8;
-	s_Fb.transp.length = 8;
+	s_Fb.green.length = 8;
+	s_Fb.blue.length = 8;
+	s_Fb.transp.length = 0;
 
-	s_Fb.blue.offset = 0;
+	// Packed byte order in DG_ScreenBuffer is R, G, B.
+	s_Fb.red.offset = 0;
 	s_Fb.green.offset = 8;
-	s_Fb.red.offset = 16;
-	s_Fb.transp.offset = 24;
+	s_Fb.blue.offset = 16;
+	s_Fb.transp.offset = 0;
 	
 
     DG_printf("I_InitGraphics: framebuffer: x_res: %d, y_res: %d, x_virtual: %d, y_virtual: %d, bpp: %d\n",
@@ -283,8 +302,12 @@ void I_FinishUpdate (void)
                 //XXX FIXME fb_scaling support!
             }
 #else
+#if DOOMGENERIC_FRAMEBUFFER_RGB888_PACKED
+            cmap_to_rgb888_packed((void*)line_out, (void*)line_in, SCREENWIDTH);
+#else
             //cmap_to_rgb565((void*)line_out, (void*)line_in, SCREENWIDTH);
             cmap_to_fb((void*)line_out, (void*)line_in, SCREENWIDTH);
+#endif
 #endif
             line_out += (SCREENWIDTH * fb_scaling * (s_Fb.bits_per_pixel/8)) + x_offset_end;
         }
@@ -331,10 +354,18 @@ void I_SetPalette (byte* palette)
      * map to the right pixel format over here! */
 
     for (i=0; i<256; ++i ) {
+        const uint8_t r = gammatable[usegamma][*palette++];
+        const uint8_t g = gammatable[usegamma][*palette++];
+        const uint8_t b = gammatable[usegamma][*palette++];
+
         colors[i].a = 0;
-        colors[i].r = gammatable[usegamma][*palette++];
-        colors[i].g = gammatable[usegamma][*palette++];
-        colors[i].b = gammatable[usegamma][*palette++];
+        colors[i].r = r;
+        colors[i].g = g;
+        colors[i].b = b;
+
+        rgb888_palette[i][0] = r;
+        rgb888_palette[i][1] = g;
+        rgb888_palette[i][2] = b;
     }
 }
 

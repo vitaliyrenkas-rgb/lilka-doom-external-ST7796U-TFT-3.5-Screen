@@ -8,6 +8,20 @@ extern "C" {
 
 static SPIClass extSpi(FSPI);
 static bool extReady = false;
+static bool scaleMapsReady = false;
+
+static uint16_t srcXMap[DOOM_PRESENT_W];
+static uint16_t srcYMap[DOOM_PRESENT_H];
+
+#if DOOM_TFT_PIXFMT == DOOM_TFT_PIXFMT_RGB565
+static constexpr uint8_t TFT_COLMOD = 0x55;
+static constexpr size_t TFT_BYTES_PER_PIXEL = 2;
+#elif DOOM_TFT_PIXFMT == DOOM_TFT_PIXFMT_RGB666
+static constexpr uint8_t TFT_COLMOD = 0x66;
+static constexpr size_t TFT_BYTES_PER_PIXEL = 3;
+#else
+#error "Unknown DOOM_TFT_PIXFMT"
+#endif
 
 static inline void tftSelect() {
     digitalWrite(EXT_TFT_CS, LOW);
@@ -29,13 +43,6 @@ static void writeCommand(uint8_t cmd) {
     tftSelect();
     tftCommandMode();
     extSpi.write(cmd);
-    tftDeselect();
-}
-
-static void writeData8(uint8_t data) {
-    tftSelect();
-    tftDataMode();
-    extSpi.write(data);
     tftDeselect();
 }
 
@@ -72,6 +79,60 @@ static void setAddressWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     writeCommand(0x2C); // RAMWR
 }
 
+static void buildScaleMaps() {
+    if (scaleMapsReady) {
+        return;
+    }
+
+    for (uint16_t x = 0; x < DOOM_PRESENT_W; ++x) {
+        srcXMap[x] = (static_cast<uint32_t>(x) * DOOMGENERIC_RESX) / DOOM_PRESENT_W;
+    }
+
+    for (uint16_t y = 0; y < DOOM_PRESENT_H; ++y) {
+        srcYMap[y] = (static_cast<uint32_t>(y) * DOOMGENERIC_RESY) / DOOM_PRESENT_H;
+    }
+
+    scaleMapsReady = true;
+}
+
+static inline void encodePixel(uint8_t* out, uint8_t r, uint8_t g, uint8_t b) {
+#if DOOM_TFT_PIXFMT == DOOM_TFT_PIXFMT_RGB565
+    const uint16_t rgb565 = (static_cast<uint16_t>(r & 0xf8) << 8) |
+                            (static_cast<uint16_t>(g & 0xfc) << 3) |
+                            static_cast<uint16_t>(b >> 3);
+    out[0] = static_cast<uint8_t>(rgb565 >> 8);
+    out[1] = static_cast<uint8_t>(rgb565 & 0xff);
+#else
+    out[0] = r;
+    out[1] = g;
+    out[2] = b;
+#endif
+}
+
+static inline void encodePixelFromPackedRgb888(uint8_t* out, const uint8_t* pixel) {
+#if DOOM_TFT_PIXFMT == DOOM_TFT_PIXFMT_RGB565
+    const uint8_t r = pixel[0];
+    const uint8_t g = pixel[1];
+    const uint8_t b = pixel[2];
+    const uint16_t rgb565 = (static_cast<uint16_t>(r & 0xf8) << 8) |
+                            (static_cast<uint16_t>(g & 0xfc) << 3) |
+                            static_cast<uint16_t>(b >> 3);
+    out[0] = static_cast<uint8_t>(rgb565 >> 8);
+    out[1] = static_cast<uint8_t>(rgb565 & 0xff);
+#else
+    out[0] = pixel[0];
+    out[1] = pixel[1];
+    out[2] = pixel[2];
+#endif
+}
+
+#define DOOM_TFT_NATIVE_DIRECT_RGB666 \
+    (DOOM_TFT_PIXFMT == DOOM_TFT_PIXFMT_RGB666 && \
+     DOOMGENERIC_FRAMEBUFFER_RGB888_PACKED && \
+     DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL == 3 && \
+     DOOM_PRESENT_W == DOOMGENERIC_RESX && \
+     DOOM_PRESENT_H == DOOMGENERIC_RESY)
+
 bool externalTftBegin() {
     pinMode(EXT_TFT_CS, OUTPUT);
     pinMode(EXT_TFT_DC, OUTPUT);
@@ -84,8 +145,6 @@ bool externalTftBegin() {
     digitalWrite(EXT_TFT_RST, HIGH);
     delay(150);
 
-    // Use a conservative SPI speed for the first Doom multiboot proof.
-    // After picture is stable, this can be raised and benchmarked.
     extSpi.begin(EXT_TFT_SCK, -1, EXT_TFT_MOSI, EXT_TFT_CS);
     extSpi.beginTransaction(SPISettings(40000000, MSBFIRST, SPI_MODE0));
 
@@ -94,9 +153,8 @@ bool externalTftBegin() {
     writeCommand(0x11); // Sleep out
     delay(120);
 
-    // ILI9488 SPI commonly expects RGB666 / 18-bit pixel writes.
-    const uint8_t pixfmt[] = {0x66};
-    writeCommandData(0x3A, pixfmt, sizeof(pixfmt));
+    const uint8_t pixfmt[] = {TFT_COLMOD};
+    writeCommandData(0x3A, pixfmt, sizeof(pixfmt)); // COLMOD / Interface Pixel Format
 
     // Landscape 480x320. This matched the KeiraOS external TFT milestone.
     const uint8_t madctl[] = {0xE8};
@@ -106,7 +164,21 @@ bool externalTftBegin() {
     writeCommand(0x29); // Display on
     delay(50);
 
+    buildScaleMaps();
+
     extReady = true;
+    Serial.printf(
+        "[DOOM TFT] profile=%d area=%dx%d+%d+%d colmod=0x%02x bpp=%u srcBpp=%u direct=%u\n",
+        DOOM_TFT_PROFILE,
+        DOOM_PRESENT_W,
+        DOOM_PRESENT_H,
+        DOOM_PRESENT_X,
+        DOOM_PRESENT_Y,
+        TFT_COLMOD,
+        static_cast<unsigned>(TFT_BYTES_PER_PIXEL),
+        static_cast<unsigned>(DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL),
+        static_cast<unsigned>(DOOM_TFT_NATIVE_DIRECT_RGB666)
+    );
     externalTftClear(0, 0, 0);
     return true;
 }
@@ -116,11 +188,9 @@ void externalTftClear(uint8_t r, uint8_t g, uint8_t b) {
         return;
     }
 
-    static uint8_t row[EXT_TFT_W * 3];
+    static uint8_t row[EXT_TFT_W * TFT_BYTES_PER_PIXEL];
     for (int x = 0; x < EXT_TFT_W; ++x) {
-        row[x * 3 + 0] = r;
-        row[x * 3 + 1] = g;
-        row[x * 3 + 2] = b;
+        encodePixel(&row[x * TFT_BYTES_PER_PIXEL], r, g, b);
     }
 
     setAddressWindow(0, 0, EXT_TFT_W, EXT_TFT_H);
@@ -133,12 +203,14 @@ void externalTftClear(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 static void drawSolidRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t r, uint8_t g, uint8_t b) {
-    static uint8_t row[EXT_TFT_W * 3];
-    const size_t bytes = static_cast<size_t>(w) * 3;
+    if (w == 0 || h == 0) {
+        return;
+    }
+
+    static uint8_t row[EXT_TFT_W * TFT_BYTES_PER_PIXEL];
+    const size_t bytes = static_cast<size_t>(w) * TFT_BYTES_PER_PIXEL;
     for (uint16_t px = 0; px < w; ++px) {
-        row[px * 3 + 0] = r;
-        row[px * 3 + 1] = g;
-        row[px * 3 + 2] = b;
+        encodePixel(&row[px * TFT_BYTES_PER_PIXEL], r, g, b);
     }
 
     setAddressWindow(x, y, w, h);
@@ -150,35 +222,72 @@ static void drawSolidRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_
     tftDeselect();
 }
 
+static void drawStaticBordersOnce() {
+    static bool bordersDrawn = false;
+    if (bordersDrawn) {
+        return;
+    }
+
+    drawSolidRect(0, 0, EXT_TFT_W, DOOM_PRESENT_Y, 0, 0, 0);
+    drawSolidRect(
+        0,
+        DOOM_PRESENT_Y + DOOM_PRESENT_H,
+        EXT_TFT_W,
+        EXT_TFT_H - DOOM_PRESENT_Y - DOOM_PRESENT_H,
+        0,
+        0,
+        0
+    );
+    drawSolidRect(0, DOOM_PRESENT_Y, DOOM_PRESENT_X, DOOM_PRESENT_H, 0, 0, 0);
+    drawSolidRect(
+        DOOM_PRESENT_X + DOOM_PRESENT_W,
+        DOOM_PRESENT_Y,
+        EXT_TFT_W - DOOM_PRESENT_X - DOOM_PRESENT_W,
+        DOOM_PRESENT_H,
+        0,
+        0,
+        0
+    );
+
+    bordersDrawn = true;
+}
+
 void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
     if (!extReady || framebuffer == nullptr) {
         return;
     }
 
-    static bool barsDrawn = false;
-    if (!barsDrawn) {
-        drawSolidRect(0, 0, EXT_TFT_W, DOOM_PRESENT_Y, 0, 0, 0);
-        drawSolidRect(
-            0, DOOM_PRESENT_Y + DOOM_PRESENT_H, EXT_TFT_W, EXT_TFT_H - DOOM_PRESENT_Y - DOOM_PRESENT_H, 0, 0, 0
-        );
-        barsDrawn = true;
-    }
+    buildScaleMaps();
+    drawStaticBordersOnce();
 
-    static uint8_t row[DOOM_PRESENT_W * 3];
+    const uint8_t* packed = reinterpret_cast<const uint8_t*>(framebuffer);
+    const size_t srcStride = static_cast<size_t>(DOOMGENERIC_RESX) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
+
     setAddressWindow(DOOM_PRESENT_X, DOOM_PRESENT_Y, DOOM_PRESENT_W, DOOM_PRESENT_H);
 
     tftSelect();
     tftDataMode();
+
+#if DOOM_TFT_NATIVE_DIRECT_RGB666
+    // FAST_320 + RGB666: DG_ScreenBuffer is already packed R,G,B bytes.
+    // Stream each native Doom row directly to SPI; no row repack, no 32-bit reads.
     for (int y = 0; y < DOOM_PRESENT_H; ++y) {
-        const int sy = (y * DOOMGENERIC_RESY) / DOOM_PRESENT_H; // 0..199
+        const uint8_t* src = packed + (static_cast<size_t>(srcYMap[y]) * srcStride);
+        extSpi.writeBytes(const_cast<uint8_t*>(src), DOOM_PRESENT_W * TFT_BYTES_PER_PIXEL);
+    }
+#else
+    static uint8_t row[DOOM_PRESENT_W * TFT_BYTES_PER_PIXEL];
+    for (int y = 0; y < DOOM_PRESENT_H; ++y) {
+        const uint8_t* src = packed + (static_cast<size_t>(srcYMap[y]) * srcStride);
         for (int x = 0; x < DOOM_PRESENT_W; ++x) {
-            const int sx = (x * DOOMGENERIC_RESX) / DOOM_PRESENT_W; // 0..319
-            const uint32_t pixel = framebuffer[sy * DOOMGENERIC_RESX + sx];
-            row[x * 3 + 0] = static_cast<uint8_t>((pixel >> 16) & 0xff);
-            row[x * 3 + 1] = static_cast<uint8_t>((pixel >> 8) & 0xff);
-            row[x * 3 + 2] = static_cast<uint8_t>(pixel & 0xff);
+            encodePixelFromPackedRgb888(
+                &row[x * TFT_BYTES_PER_PIXEL],
+                src + (static_cast<size_t>(srcXMap[x]) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL)
+            );
         }
         extSpi.writeBytes(row, sizeof(row));
     }
+#endif
+
     tftDeselect();
 }
