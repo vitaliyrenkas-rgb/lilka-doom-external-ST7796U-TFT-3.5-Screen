@@ -146,7 +146,7 @@ bool externalTftBegin() {
     delay(150);
 
     extSpi.begin(EXT_TFT_SCK, -1, EXT_TFT_MOSI, EXT_TFT_CS);
-    extSpi.beginTransaction(SPISettings(40000000, MSBFIRST, SPI_MODE0));
+    extSpi.beginTransaction(SPISettings(60000000, MSBFIRST, SPI_MODE0));
 
     writeCommand(0x01); // Software reset
     delay(120);
