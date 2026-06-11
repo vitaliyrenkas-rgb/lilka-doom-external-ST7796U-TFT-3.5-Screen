@@ -11,6 +11,7 @@ static bool extReady = false;
 static bool scaleMapsReady = false;
 
 static size_t srcXByteMap[DOOM_PRESENT_W];
+static size_t srcYByteMap[DOOM_PRESENT_H];
 static uint16_t srcXMap[DOOM_PRESENT_W];
 static uint16_t srcYMap[DOOM_PRESENT_H];
 
@@ -90,8 +91,11 @@ static void buildScaleMaps() {
         srcXByteMap[x] = static_cast<size_t>(srcXMap[x]) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
     }
 
+    const size_t srcStride = static_cast<size_t>(DOOMGENERIC_RESX) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
+
     for (uint16_t y = 0; y < DOOM_PRESENT_H; ++y) {
-        srcYMap[y] = (static_cast<uint32_t>(y) * DOOMGENERIC_RESY) / DOOM_PRESENT_H;
+         srcYMap[y] = (static_cast<uint32_t>(y) * DOOMGENERIC_RESY) / DOOM_PRESENT_H;
+        srcYByteMap[y] = static_cast<size_t>(srcYMap[y]) * srcStride;
     }
 
     scaleMapsReady = true;
@@ -274,18 +278,18 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
     // FAST_320 + RGB666: DG_ScreenBuffer is already packed R,G,B bytes.
     // Stream each native Doom row directly to SPI; no row repack, no 32-bit reads.
     for (int y = 0; y < DOOM_PRESENT_H; ++y) {
-        const uint8_t* src = packed + (static_cast<size_t>(srcYMap[y]) * srcStride);
+        const uint8_t* src = packed + srcYByteMap[y];
         extSpi.writeBytes(const_cast<uint8_t*>(src), DOOM_PRESENT_W * TFT_BYTES_PER_PIXEL);
     }
 #else
- static uint8_t row[DOOM_PRESENT_W * TFT_BYTES_PER_PIXEL];
+    static uint8_t row[DOOM_PRESENT_W * TFT_BYTES_PER_PIXEL];
     uint16_t lastSrcY = 0xffff;
 
     for (int y = 0; y < DOOM_PRESENT_H; ++y) {
-    const uint16_t currentSrcY = srcYMap[y];
+        const uint16_t currentSrcY = srcYMap[y];
 
-    if (currentSrcY != lastSrcY) {
-        const uint8_t* src = packed + (static_cast<size_t>(currentSrcY) * srcStride);
+        if (currentSrcY != lastSrcY) {
+            const uint8_t* src = packed + srcYByteMap[y];
 
 #if (DOOM_TFT_PIXFMT == DOOM_TFT_PIXFMT_RGB666) && (DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL == 3)
         uint8_t* dp = row;
