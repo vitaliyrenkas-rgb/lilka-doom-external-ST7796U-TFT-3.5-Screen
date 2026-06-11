@@ -12,6 +12,10 @@ static bool scaleMapsReady = false;
 
 static uint32_t lastPresentMs = 0;
 
+static uint32_t tftPresentCount = 0;
+static uint32_t tftPresentLogLastMs = 0;
+static uint32_t tftPresentLastFrameUs = 0;
+
 static size_t srcXByteMap[DOOM_PRESENT_W];
 static size_t srcYByteMap[DOOM_PRESENT_H];
 static uint16_t srcXMap[DOOM_PRESENT_W];
@@ -271,6 +275,8 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
     }
     lastPresentMs = nowMs;
 
+    const uint32_t presentStartUs = micros();
+
     buildScaleMaps();
     drawStaticBordersOnce();
 
@@ -325,5 +331,27 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
 }
 #endif
 
-    tftDeselect();
+       tftDeselect();
+
+    tftPresentLastFrameUs = micros() - presentStartUs;
+    ++tftPresentCount;
+
+    const uint32_t logNowMs = millis();
+    if (tftPresentLogLastMs == 0) {
+        tftPresentLogLastMs = logNowMs;
+    } else if ((logNowMs - tftPresentLogLastMs) >= 1000) {
+        const uint32_t elapsedMs = logNowMs - tftPresentLogLastMs;
+        const uint32_t tftFps10 = (tftPresentCount * 10000u) / elapsedMs;
+
+        Serial.printf(
+            "[TFT FPS] presents=%lu.%01lu last=%lu us interval=%lu ms\n",
+            static_cast<unsigned long>(tftFps10 / 10u),
+            static_cast<unsigned long>(tftFps10 % 10u),
+            static_cast<unsigned long>(tftPresentLastFrameUs),
+            static_cast<unsigned long>(DOOM_TFT_PRESENT_INTERVAL_MS)
+        );
+
+        tftPresentCount = 0;
+        tftPresentLogLastMs = logNowMs;
+    }
 }
