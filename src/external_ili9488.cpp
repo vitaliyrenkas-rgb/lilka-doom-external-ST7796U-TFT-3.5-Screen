@@ -282,13 +282,14 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
     for (int y = 0; y < DOOM_PRESENT_H; ++y) {
         const uint8_t* src = packed + (static_cast<size_t>(srcYMap[y]) * srcStride);
 #if (DOOM_TFT_PIXFMT == DOOM_TFT_PIXFMT_RGB666) && (DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL == 3)
+        uint8_t* dp = row;
+
         for (int x = 0; x < DOOM_PRESENT_W; ++x) {
             const uint8_t* sp = src + srcXByteMap[x];
-            uint8_t* dp = &row[x * 3u];
 
-            dp[0] = sp[0];
-            dp[1] = sp[1];
-            dp[2] = sp[2];
+            *dp++ = sp[0];
+            *dp++ = sp[1];
+            *dp++ = sp[2];
         }
 #else
         for (int x = 0; x < DOOM_PRESENT_W; ++x) {
