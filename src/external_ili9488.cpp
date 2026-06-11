@@ -10,6 +10,7 @@ static SPIClass extSpi(FSPI);
 static bool extReady = false;
 static bool scaleMapsReady = false;
 
+static size_t srcXByteMap[DOOM_PRESENT_W];
 static uint16_t srcXMap[DOOM_PRESENT_W];
 static uint16_t srcYMap[DOOM_PRESENT_H];
 
@@ -86,6 +87,7 @@ static void buildScaleMaps() {
 
     for (uint16_t x = 0; x < DOOM_PRESENT_W; ++x) {
         srcXMap[x] = (static_cast<uint32_t>(x) * DOOMGENERIC_RESX) / DOOM_PRESENT_W;
+        srcXByteMap[x] = static_cast<size_t>(srcXMap[x]) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
     }
 
     for (uint16_t y = 0; y < DOOM_PRESENT_H; ++y) {
@@ -281,7 +283,7 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
         const uint8_t* src = packed + (static_cast<size_t>(srcYMap[y]) * srcStride);
 #if (DOOM_TFT_PIXFMT == DOOM_TFT_PIXFMT_RGB666) && (DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL == 3)
         for (int x = 0; x < DOOM_PRESENT_W; ++x) {
-            const uint8_t* sp = src + (static_cast<size_t>(srcXMap[x]) * 3u);
+            const uint8_t* sp = src + srcXByteMap[x];
             uint8_t* dp = &row[x * 3u];
 
             dp[0] = sp[0];
