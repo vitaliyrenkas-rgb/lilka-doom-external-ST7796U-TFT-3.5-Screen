@@ -10,6 +10,8 @@ static SPIClass extSpi(FSPI);
 static bool extReady = false;
 static bool scaleMapsReady = false;
 
+static uint32_t lastPresentMs = 0;
+
 static size_t srcXByteMap[DOOM_PRESENT_W];
 static size_t srcYByteMap[DOOM_PRESENT_H];
 static uint16_t srcXMap[DOOM_PRESENT_W];
@@ -262,6 +264,12 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
     if (!extReady || framebuffer == nullptr) {
         return;
     }
+
+    const uint32_t nowMs = millis();
+    if (lastPresentMs != 0 && (nowMs - lastPresentMs) < DOOM_TFT_PRESENT_INTERVAL_MS) {
+        return;
+    }
+    lastPresentMs = nowMs;
 
     buildScaleMaps();
     drawStaticBordersOnce();

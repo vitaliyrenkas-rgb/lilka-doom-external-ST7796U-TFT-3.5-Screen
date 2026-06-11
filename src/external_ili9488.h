@@ -65,6 +65,10 @@
 #define DOOM_TFT_PIXFMT DOOM_TFT_PIXFMT_RGB666
 #endif
 
+#ifndef DOOM_TFT_PRESENT_INTERVAL_MS
+#define DOOM_TFT_PRESENT_INTERVAL_MS 66
+#endif
+
 bool externalTftBegin();
 void externalTftClear(uint8_t r, uint8_t g, uint8_t b);
 void externalTftPresentDoomFrame(const uint32_t* framebuffer);
