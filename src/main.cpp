@@ -142,11 +142,11 @@ void buttonHandler(lilka::Button button, bool pressed) {
         case lilka::Button::A:
             key->key = KEY_FIRE;
             break;
-        case lilka::Button::B:
+       case lilka::Button::B:
             key->key = KEY_USE;
             break;
         case lilka::Button::C:
-            key->key = KEY_TAB;
+            key->key = KEY_ESCAPE;
             break;
         case lilka::Button::D:
             // Cycle weapons
