@@ -146,7 +146,7 @@ void buttonHandler(lilka::Button button, bool pressed) {
             key->key = KEY_USE;
             break;
         case lilka::Button::C:
-            key->key = KEY_ESCAPE;
+            key->key = KEY_TAB;
             break;
         case lilka::Button::D:
             // Cycle weapons
@@ -339,6 +339,9 @@ void setup() {
         rebootToKeiraOS();
     }
 
+    // Lilka v2 SELECT is GPIO0/BOOT. Re-apply runtime input mode after init.
+    //Restoration of SELECT button ESC MENU function.
+    pinMode(LILKA_GPIO_SELECT, INPUT_PULLUP);
     lilka::controller.setGlobalHandler(buttonHandler);
 
     // while (1) {
