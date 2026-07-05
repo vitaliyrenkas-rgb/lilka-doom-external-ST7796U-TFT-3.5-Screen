@@ -11,7 +11,7 @@ static bool extReady = false;
 
 static bool scaleMapsReady = false;
 static uint16_t srcXMap[DOOM_PRESENT_W];
-// Offset in uint32_t pixels, not bytes.
+// Offset in bytes into packed RGB888 source framebuffer.
 static size_t srcYOffsetMap[DOOM_PRESENT_H];
 
 static inline void tftSelect() {
@@ -164,13 +164,21 @@ static void buildScaleMaps() {
         srcXMap[x] = (static_cast<uint32_t>(x) * DOOMGENERIC_RESX) / DOOM_PRESENT_W;
     }
 
+    const size_t srcStride = static_cast<size_t>(DOOMGENERIC_RESX) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
+
     for (uint16_t y = 0; y < DOOM_PRESENT_H; ++y) {
         const uint16_t sy = (static_cast<uint32_t>(y) * DOOMGENERIC_RESY) / DOOM_PRESENT_H;
-        srcYOffsetMap[y] = static_cast<size_t>(sy) * DOOMGENERIC_RESX;
+        srcYOffsetMap[y] = static_cast<size_t>(sy) * srcStride;
     }
 
     scaleMapsReady = true;
 }
+
+#define DOOM_TFT_NATIVE_DIRECT_RGB666 \
+    (DOOMGENERIC_FRAMEBUFFER_RGB888_PACKED && \
+     DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL == 3 && \
+     DOOM_PRESENT_W == DOOMGENERIC_RESX && \
+     DOOM_PRESENT_H == DOOMGENERIC_RESY)
 
 void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
     if (!extReady || framebuffer == nullptr) {
@@ -189,23 +197,35 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
         barsDrawn = true;
     }
 
-    static uint8_t row[DOOM_PRESENT_W * 3];
+    const uint8_t* packed = reinterpret_cast<const uint8_t*>(framebuffer);
+
     setAddressWindow(DOOM_PRESENT_X, DOOM_PRESENT_Y, DOOM_PRESENT_W, DOOM_PRESENT_H);
 
-       tftSelect();
+    tftSelect();
     tftDataMode();
+
+#if DOOM_TFT_NATIVE_DIRECT_RGB666
     for (int y = 0; y < DOOM_PRESENT_H; ++y) {
-        const uint32_t* srcRow = framebuffer + srcYOffsetMap[y];
+        const uint8_t* src = packed + srcYOffsetMap[y];
+        extSpi.writeBytes(const_cast<uint8_t*>(src), DOOM_PRESENT_W * 3);
+    }
+#else
+    static uint8_t row[DOOM_PRESENT_W * 3];
+
+    for (int y = 0; y < DOOM_PRESENT_H; ++y) {
+        const uint8_t* src = packed + srcYOffsetMap[y];
 
         for (int x = 0; x < DOOM_PRESENT_W; ++x) {
-            const uint32_t pixel = srcRow[srcXMap[x]];
+            const uint8_t* sp = src + static_cast<size_t>(srcXMap[x]) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
 
-            row[x * 3 + 0] = static_cast<uint8_t>((pixel >> 16) & 0xff);
-            row[x * 3 + 1] = static_cast<uint8_t>((pixel >> 8) & 0xff);
-            row[x * 3 + 2] = static_cast<uint8_t>(pixel & 0xff);
+            row[x * 3 + 0] = sp[0];
+            row[x * 3 + 1] = sp[1];
+            row[x * 3 + 2] = sp[2];
         }
 
         extSpi.writeBytes(row, sizeof(row));
     }
+#endif
+
     tftDeselect();
 }

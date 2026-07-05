@@ -409,9 +409,9 @@ void setup() {
         ESP.getMinFreePsram()
     );
     // Back buffer must be allocated before doomgeneric_Create since it calls DG_DrawFrame
-    backBuffer = static_cast<uint32_t*>(malloc(DOOMGENERIC_RESX * DOOMGENERIC_RESY * 4));
+    backBuffer = static_cast<uint32_t*>(malloc(DOOMGENERIC_FRAMEBUFFER_BYTES));
     Serial.printf(
-        "[DOOM ALLOC] backBuffer=%p bytes=%u\n", backBuffer, (unsigned)(DOOMGENERIC_RESX * DOOMGENERIC_RESY * 4)
+        "[DOOM ALLOC] backBuffer=%p bytes=%u\n", backBuffer, (unsigned)DOOMGENERIC_FRAMEBUFFER_BYTES
     );
     Serial.println("[DOOM CREATE] doomgeneric_Create enter");
     doomgeneric_Create(argc, argv);
