@@ -9,6 +9,11 @@ extern "C" {
 static SPIClass extSpi(FSPI);
 static bool extReady = false;
 
+static bool scaleMapsReady = false;
+static uint16_t srcXMap[DOOM_PRESENT_W];
+// Offset in uint32_t pixels, not bytes.
+static size_t srcYOffsetMap[DOOM_PRESENT_H];
+
 static inline void tftSelect() {
     digitalWrite(EXT_TFT_CS, LOW);
 }
@@ -150,10 +155,30 @@ static void drawSolidRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_
     tftDeselect();
 }
 
+static void buildScaleMaps() {
+    if (scaleMapsReady) {
+        return;
+    }
+
+    for (uint16_t x = 0; x < DOOM_PRESENT_W; ++x) {
+        srcXMap[x] = (static_cast<uint32_t>(x) * DOOMGENERIC_RESX) / DOOM_PRESENT_W;
+    }
+
+    for (uint16_t y = 0; y < DOOM_PRESENT_H; ++y) {
+        const uint16_t sy = (static_cast<uint32_t>(y) * DOOMGENERIC_RESY) / DOOM_PRESENT_H;
+        srcYOffsetMap[y] = static_cast<size_t>(sy) * DOOMGENERIC_RESX;
+    }
+
+    scaleMapsReady = true;
+}
+
 void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
     if (!extReady || framebuffer == nullptr) {
         return;
     }
+
+    buildScaleMaps();
+
 
     static bool barsDrawn = false;
     if (!barsDrawn) {
@@ -167,17 +192,19 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
     static uint8_t row[DOOM_PRESENT_W * 3];
     setAddressWindow(DOOM_PRESENT_X, DOOM_PRESENT_Y, DOOM_PRESENT_W, DOOM_PRESENT_H);
 
-    tftSelect();
+       tftSelect();
     tftDataMode();
     for (int y = 0; y < DOOM_PRESENT_H; ++y) {
-        const int sy = (y * DOOMGENERIC_RESY) / DOOM_PRESENT_H; // 0..199
+        const uint32_t* srcRow = framebuffer + srcYOffsetMap[y];
+
         for (int x = 0; x < DOOM_PRESENT_W; ++x) {
-            const int sx = (x * DOOMGENERIC_RESX) / DOOM_PRESENT_W; // 0..319
-            const uint32_t pixel = framebuffer[sy * DOOMGENERIC_RESX + sx];
+            const uint32_t pixel = srcRow[srcXMap[x]];
+
             row[x * 3 + 0] = static_cast<uint8_t>((pixel >> 16) & 0xff);
             row[x * 3 + 1] = static_cast<uint8_t>((pixel >> 8) & 0xff);
             row[x * 3 + 2] = static_cast<uint8_t>(pixel & 0xff);
         }
+
         extSpi.writeBytes(row, sizeof(row));
     }
     tftDeselect();
