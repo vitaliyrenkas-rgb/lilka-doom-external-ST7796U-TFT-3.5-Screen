@@ -210,20 +210,28 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
         extSpi.writeBytes(const_cast<uint8_t*>(src), DOOM_PRESENT_W * 3);
     }
 #else
-    static uint8_t row[DOOM_PRESENT_W * 3];
+    static constexpr int CHUNK_ROWS = 2;
+    static uint8_t rows[CHUNK_ROWS * DOOM_PRESENT_W * 3];
+    const size_t rowBytes = static_cast<size_t>(DOOM_PRESENT_W) * 3u;
 
-    for (int y = 0; y < DOOM_PRESENT_H; ++y) {
-        const uint8_t* src = packed + srcYOffsetMap[y];
+    for (int y = 0; y < DOOM_PRESENT_H; y += CHUNK_ROWS) {
+        const int remainingRows = DOOM_PRESENT_H - y;
+        const int rowsThisChunk = (remainingRows < CHUNK_ROWS) ? remainingRows : CHUNK_ROWS;
 
-        for (int x = 0; x < DOOM_PRESENT_W; ++x) {
-            const uint8_t* sp = src + static_cast<size_t>(srcXMap[x]) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
+        for (int chunkY = 0; chunkY < rowsThisChunk; ++chunkY) {
+            const uint8_t* src = packed + srcYOffsetMap[y + chunkY];
+            uint8_t* row = rows + static_cast<size_t>(chunkY) * rowBytes;
 
-            row[x * 3 + 0] = sp[0];
-            row[x * 3 + 1] = sp[1];
-            row[x * 3 + 2] = sp[2];
+            for (int x = 0; x < DOOM_PRESENT_W; ++x) {
+                const uint8_t* sp = src + static_cast<size_t>(srcXMap[x]) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
+
+                row[x * 3 + 0] = sp[0];
+                row[x * 3 + 1] = sp[1];
+                row[x * 3 + 2] = sp[2];
+            }
         }
 
-        extSpi.writeBytes(row, sizeof(row));
+        extSpi.writeBytes(rows, rowBytes * static_cast<size_t>(rowsThisChunk));
     }
 #endif
 
