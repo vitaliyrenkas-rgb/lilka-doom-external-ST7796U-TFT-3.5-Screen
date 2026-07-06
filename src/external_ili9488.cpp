@@ -210,7 +210,7 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
         extSpi.writeBytes(const_cast<uint8_t*>(src), DOOM_PRESENT_W * 3);
     }
 #else
-    static constexpr int CHUNK_ROWS = 2;
+    static constexpr int CHUNK_ROWS = 4;
     static uint8_t rows[CHUNK_ROWS * DOOM_PRESENT_W * 3];
     const size_t rowBytes = static_cast<size_t>(DOOM_PRESENT_W) * 3u;
 
