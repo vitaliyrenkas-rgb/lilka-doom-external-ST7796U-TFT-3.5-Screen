@@ -4,7 +4,7 @@
 
 // External ST7796U 3.5" FFC TFT on Lilka expansion port.
 // NOTE: The legacy filename is kept for this functional patch only; after the
-// 480-wide/color test passes, move it to external_st7796u.* in the new FFC repo.
+// 480-wide/performance test passes, move it to external_st7796u.* in the new FFC repo.
 //
 // Validated FFC/ST7796U wiring:
 //   SCK  -> GPIO12
@@ -34,25 +34,24 @@
 #endif
 
 #ifndef EXT_TFT_CHUNK_ROWS
-#define EXT_TFT_CHUNK_ROWS 4
+#define EXT_TFT_CHUNK_ROWS 8
 #endif
 
 // ST7796U IPS panel color policy.
-// #001 proved RGB565 transport works, but the panel showed inverted colors.
-// Keep MADCTL=0xE8 from the validated KeiraOS FFC path and enable LCD inversion.
+// #002 proved INVON fixes the panel colors while RGB565 transport stays valid.
 #ifndef EXT_TFT_ENABLE_INVERSION
 #define EXT_TFT_ENABLE_INVERSION 1
 #endif
 
-// Leave RGB565 byte/color order unchanged by default. If the next hardware test
+// Leave RGB565 byte/color order unchanged by default. If a hardware revision
 // shows red/blue swapped instead of true inversion, set this to 1 in platformio.ini.
 #ifndef EXT_TFT_SWAP_RB
 #define EXT_TFT_SWAP_RB 0
 #endif
 
-// DOOM FFC #002 target:
+// DOOM FFC #003 target:
 // Doom native framebuffer is 320x200; present it as 480x300 with 10 px black
-// bars at top/bottom, preserving the classic 16:10 Doom aspect ratio.
+// bars at top/bottom. The .cpp uses an exact 3:2 scaler fast path for this mode.
 #ifndef DOOM_PRESENT_W
 #define DOOM_PRESENT_W 480
 #endif
