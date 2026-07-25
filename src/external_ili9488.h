@@ -3,8 +3,8 @@
 #include <Arduino.h>
 
 // External ST7796U 3.5" FFC TFT on Lilka expansion port.
-// NOTE: The legacy filename is kept to avoid touching Doom/main includes in this
-// first bring-up patch.
+// NOTE: The legacy filename is kept for this functional patch only; after the
+// 480-wide/color test passes, move it to external_st7796u.* in the new FFC repo.
 //
 // Validated FFC/ST7796U wiring:
 //   SCK  -> GPIO12
@@ -37,20 +37,33 @@
 #define EXT_TFT_CHUNK_ROWS 4
 #endif
 
-// DOOM FFC #001 bring-up target:
-// first get a correct picture, then bring back 400x250/5:4 expander and FPS work.
-// Doom native framebuffer is 320x200; present it centered on 480x320.
+// ST7796U IPS panel color policy.
+// #001 proved RGB565 transport works, but the panel showed inverted colors.
+// Keep MADCTL=0xE8 from the validated KeiraOS FFC path and enable LCD inversion.
+#ifndef EXT_TFT_ENABLE_INVERSION
+#define EXT_TFT_ENABLE_INVERSION 1
+#endif
+
+// Leave RGB565 byte/color order unchanged by default. If the next hardware test
+// shows red/blue swapped instead of true inversion, set this to 1 in platformio.ini.
+#ifndef EXT_TFT_SWAP_RB
+#define EXT_TFT_SWAP_RB 0
+#endif
+
+// DOOM FFC #002 target:
+// Doom native framebuffer is 320x200; present it as 480x300 with 10 px black
+// bars at top/bottom, preserving the classic 16:10 Doom aspect ratio.
 #ifndef DOOM_PRESENT_W
-#define DOOM_PRESENT_W 320
+#define DOOM_PRESENT_W 480
 #endif
 #ifndef DOOM_PRESENT_H
-#define DOOM_PRESENT_H 200
+#define DOOM_PRESENT_H 300
 #endif
 #ifndef DOOM_PRESENT_X
-#define DOOM_PRESENT_X 80
+#define DOOM_PRESENT_X 0
 #endif
 #ifndef DOOM_PRESENT_Y
-#define DOOM_PRESENT_Y 60
+#define DOOM_PRESENT_Y 10
 #endif
 
 bool externalTftBegin();
