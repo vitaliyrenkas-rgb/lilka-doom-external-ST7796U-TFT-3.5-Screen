@@ -8,6 +8,7 @@ extern "C" {
 
 static SPIClass extSpi(FSPI);
 static bool extReady = false;
+static bool extTransactionActive = false;
 
 static inline void tftSelect() {
     digitalWrite(EXT_TFT_CS, LOW);
@@ -25,17 +26,29 @@ static inline void tftDataMode() {
     digitalWrite(EXT_TFT_DC, HIGH);
 }
 
+static void beginSpiTransaction(uint32_t hz) {
+    if (extTransactionActive) {
+        extSpi.endTransaction();
+    }
+    extSpi.beginTransaction(SPISettings(hz, MSBFIRST, SPI_MODE0));
+    extTransactionActive = true;
+}
+
+static inline uint16_t packRgb565(uint8_t r, uint8_t g, uint8_t b) {
+    return static_cast<uint16_t>(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+}
+
+static inline uint16_t doomPixelToRgb565(uint32_t pixel) {
+    const uint8_t r = static_cast<uint8_t>((pixel >> 16) & 0xff);
+    const uint8_t g = static_cast<uint8_t>((pixel >> 8) & 0xff);
+    const uint8_t b = static_cast<uint8_t>(pixel & 0xff);
+    return packRgb565(r, g, b);
+}
+
 static void writeCommand(uint8_t cmd) {
     tftSelect();
     tftCommandMode();
     extSpi.write(cmd);
-    tftDeselect();
-}
-
-static void writeData8(uint8_t data) {
-    tftSelect();
-    tftDataMode();
-    extSpi.write(data);
     tftDeselect();
 }
 
@@ -72,10 +85,72 @@ static void setAddressWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     writeCommand(0x2C); // RAMWR
 }
 
+static void fillRect565(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t r, uint8_t g, uint8_t b) {
+    if (w == 0 || h == 0) {
+        return;
+    }
+
+    static uint8_t row[EXT_TFT_W * 2];
+    const uint16_t color = packRgb565(r, g, b);
+    const uint8_t hi = static_cast<uint8_t>(color >> 8);
+    const uint8_t lo = static_cast<uint8_t>(color & 0xff);
+    const size_t rowBytes = static_cast<size_t>(w) * 2;
+
+    for (uint16_t px = 0; px < w; ++px) {
+        row[px * 2 + 0] = hi;
+        row[px * 2 + 1] = lo;
+    }
+
+    setAddressWindow(x, y, w, h);
+    tftSelect();
+    tftDataMode();
+    for (uint16_t py = 0; py < h; ++py) {
+        extSpi.writeBytes(row, rowBytes);
+    }
+    tftDeselect();
+}
+
+static void externalTftColorTest() {
+    Serial.println("[DOOM FFC #001] color test begin");
+
+    const uint16_t bandW = EXT_TFT_W / 5;
+    fillRect565(0 * bandW, 0, bandW, EXT_TFT_H, 255, 0, 0);
+    fillRect565(1 * bandW, 0, bandW, EXT_TFT_H, 0, 255, 0);
+    fillRect565(2 * bandW, 0, bandW, EXT_TFT_H, 0, 0, 255);
+    fillRect565(3 * bandW, 0, bandW, EXT_TFT_H, 255, 255, 255);
+    fillRect565(4 * bandW, 0, EXT_TFT_W - 4 * bandW, EXT_TFT_H, 0, 0, 0);
+
+    // Corner markers make rotation/MADCTL mistakes obvious without a full test app.
+    fillRect565(0, 0, 24, 24, 255, 255, 255);
+    fillRect565(EXT_TFT_W - 24, 0, 24, 24, 255, 255, 0);
+    fillRect565(0, EXT_TFT_H - 24, 24, 24, 0, 255, 255);
+    fillRect565(EXT_TFT_W - 24, EXT_TFT_H - 24, 24, 24, 255, 0, 255);
+
+    delay(350);
+    Serial.println("[DOOM FFC #001] color test done");
+}
+
 bool externalTftBegin() {
+    Serial.println("[DOOM FFC #001] ST7796U init start");
+    Serial.printf(
+        "[DOOM FFC #001] pins CS=%d RST=%d DC=%d MOSI=%d SCK=%d BL=external/untouched\n",
+        EXT_TFT_CS,
+        EXT_TFT_RST,
+        EXT_TFT_DC,
+        EXT_TFT_MOSI,
+        EXT_TFT_SCK
+    );
+    Serial.printf(
+        "[DOOM FFC #001] init SPI=%lu bulk SPI=%lu MODE0 RGB565 MADCTL=0xE8\n",
+        static_cast<unsigned long>(EXT_TFT_INIT_SPI_HZ),
+        static_cast<unsigned long>(EXT_TFT_BULK_SPI_HZ)
+    );
+
     pinMode(EXT_TFT_CS, OUTPUT);
     pinMode(EXT_TFT_DC, OUTPUT);
     pinMode(EXT_TFT_RST, OUTPUT);
+    pinMode(21, INPUT); // ST7796U BL is externally powered; do not drive it.
+
     digitalWrite(EXT_TFT_CS, HIGH);
     digitalWrite(EXT_TFT_DC, HIGH);
 
@@ -84,30 +159,33 @@ bool externalTftBegin() {
     digitalWrite(EXT_TFT_RST, HIGH);
     delay(150);
 
-    // Use a conservative SPI speed for the first Doom multiboot proof.
-    // After picture is stable, this can be raised and benchmarked.
     extSpi.begin(EXT_TFT_SCK, -1, EXT_TFT_MOSI, EXT_TFT_CS);
-    extSpi.beginTransaction(SPISettings(40000000, MSBFIRST, SPI_MODE0));
+    beginSpiTransaction(EXT_TFT_INIT_SPI_HZ);
 
     writeCommand(0x01); // Software reset
     delay(120);
     writeCommand(0x11); // Sleep out
     delay(120);
 
-    // ILI9488 SPI commonly expects RGB666 / 18-bit pixel writes.
-    const uint8_t pixfmt[] = {0x66};
+    // ST7796U RGB565: 2 bytes/pixel. This is the key difference from the old
+    // ILI9488/RGB666 path, which pushed 3 bytes/pixel and leaves the FFC panel black.
+    const uint8_t pixfmt[] = {0x55};
     writeCommandData(0x3A, pixfmt, sizeof(pixfmt));
 
-    // Landscape 480x320. This matched the KeiraOS external TFT milestone.
+    // Validated KeiraOS FFC orientation for ST7796U.
     const uint8_t madctl[] = {0xE8};
     writeCommandData(0x36, madctl, sizeof(madctl));
 
-    writeCommand(0x20); // Display inversion off
     writeCommand(0x29); // Display on
-    delay(50);
+    delay(80);
 
+    beginSpiTransaction(EXT_TFT_BULK_SPI_HZ);
     extReady = true;
+
+    externalTftColorTest();
     externalTftClear(0, 0, 0);
+
+    Serial.println("[DOOM FFC #001] ST7796U init done");
     return true;
 }
 
@@ -115,39 +193,7 @@ void externalTftClear(uint8_t r, uint8_t g, uint8_t b) {
     if (!extReady) {
         return;
     }
-
-    static uint8_t row[EXT_TFT_W * 3];
-    for (int x = 0; x < EXT_TFT_W; ++x) {
-        row[x * 3 + 0] = r;
-        row[x * 3 + 1] = g;
-        row[x * 3 + 2] = b;
-    }
-
-    setAddressWindow(0, 0, EXT_TFT_W, EXT_TFT_H);
-    tftSelect();
-    tftDataMode();
-    for (int y = 0; y < EXT_TFT_H; ++y) {
-        extSpi.writeBytes(row, sizeof(row));
-    }
-    tftDeselect();
-}
-
-static void drawSolidRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t r, uint8_t g, uint8_t b) {
-    static uint8_t row[EXT_TFT_W * 3];
-    const size_t bytes = static_cast<size_t>(w) * 3;
-    for (uint16_t px = 0; px < w; ++px) {
-        row[px * 3 + 0] = r;
-        row[px * 3 + 1] = g;
-        row[px * 3 + 2] = b;
-    }
-
-    setAddressWindow(x, y, w, h);
-    tftSelect();
-    tftDataMode();
-    for (uint16_t py = 0; py < h; ++py) {
-        extSpi.writeBytes(row, bytes);
-    }
-    tftDeselect();
+    fillRect565(0, 0, EXT_TFT_W, EXT_TFT_H, r, g, b);
 }
 
 void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
@@ -155,30 +201,42 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
         return;
     }
 
-    static bool barsDrawn = false;
-    if (!barsDrawn) {
-        drawSolidRect(0, 0, EXT_TFT_W, DOOM_PRESENT_Y, 0, 0, 0);
-        drawSolidRect(
-            0, DOOM_PRESENT_Y + DOOM_PRESENT_H, EXT_TFT_W, EXT_TFT_H - DOOM_PRESENT_Y - DOOM_PRESENT_H, 0, 0, 0
-        );
-        barsDrawn = true;
+    static bool firstFrame = true;
+    if (firstFrame) {
+        Serial.println("[DOOM FFC #001] first game frame begin");
     }
 
-    static uint8_t row[DOOM_PRESENT_W * 3];
+    static uint8_t chunk[DOOM_PRESENT_W * 2 * EXT_TFT_CHUNK_ROWS];
     setAddressWindow(DOOM_PRESENT_X, DOOM_PRESENT_Y, DOOM_PRESENT_W, DOOM_PRESENT_H);
 
     tftSelect();
     tftDataMode();
-    for (int y = 0; y < DOOM_PRESENT_H; ++y) {
-        const int sy = (y * DOOMGENERIC_RESY) / DOOM_PRESENT_H; // 0..199
-        for (int x = 0; x < DOOM_PRESENT_W; ++x) {
-            const int sx = (x * DOOMGENERIC_RESX) / DOOM_PRESENT_W; // 0..319
-            const uint32_t pixel = framebuffer[sy * DOOMGENERIC_RESX + sx];
-            row[x * 3 + 0] = static_cast<uint8_t>((pixel >> 16) & 0xff);
-            row[x * 3 + 1] = static_cast<uint8_t>((pixel >> 8) & 0xff);
-            row[x * 3 + 2] = static_cast<uint8_t>(pixel & 0xff);
+    for (int y0 = 0; y0 < DOOM_PRESENT_H; y0 += EXT_TFT_CHUNK_ROWS) {
+        int rows = EXT_TFT_CHUNK_ROWS;
+        if (y0 + rows > DOOM_PRESENT_H) {
+            rows = DOOM_PRESENT_H - y0;
         }
-        extSpi.writeBytes(row, sizeof(row));
+
+        for (int yy = 0; yy < rows; ++yy) {
+            const int y = y0 + yy;
+            const int sy = (y * DOOMGENERIC_RESY) / DOOM_PRESENT_H;
+            uint8_t* out = chunk + static_cast<size_t>(yy) * DOOM_PRESENT_W * 2;
+
+            for (int x = 0; x < DOOM_PRESENT_W; ++x) {
+                const int sx = (x * DOOMGENERIC_RESX) / DOOM_PRESENT_W;
+                const uint32_t pixel = framebuffer[sy * DOOMGENERIC_RESX + sx];
+                const uint16_t color = doomPixelToRgb565(pixel);
+                out[x * 2 + 0] = static_cast<uint8_t>(color >> 8);
+                out[x * 2 + 1] = static_cast<uint8_t>(color & 0xff);
+            }
+        }
+
+        extSpi.writeBytes(chunk, static_cast<size_t>(DOOM_PRESENT_W) * 2 * rows);
     }
     tftDeselect();
+
+    if (firstFrame) {
+        firstFrame = false;
+        Serial.println("[DOOM FFC #001] first game frame done");
+    }
 }
