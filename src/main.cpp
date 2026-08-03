@@ -121,6 +121,95 @@ char nextWeaponKey = '2';
 volatile bool startHeld = false;
 volatile bool selectHeld = false;
 
+//Diagnostic patch (100 Frames or 1000ms divider) - counting parameters
+#define DOOM_FPS_SD_LOG 1
+
+#if DOOM_FPS_SD_LOG
+static const char* DOOM_FPS_LOG_PATH = "/doom_fps_diag.csv";
+
+static uint32_t fpsLogStartMs = 0;
+static uint32_t fpsLogFrames = 0;
+
+static uint64_t fpsWaitUs = 0;
+static uint64_t fpsPresentUs = 0;
+static uint64_t fpsHudUs = 0;
+static uint64_t fpsDrawUs = 0;
+
+static uint32_t fpsMaxWaitUs = 0;
+static uint32_t fpsMaxPresentUs = 0;
+static uint32_t fpsMaxDrawUs = 0;
+
+static void doomFpsLogInit() {
+    SD.remove(DOOM_FPS_LOG_PATH);
+
+    File f = SD.open(DOOM_FPS_LOG_PATH, FILE_WRITE);
+    if (f) {
+        f.println("ms,window_ms,frames,fps,avg_wait_us,avg_present_us,avg_hud_us,avg_draw_us,max_wait_us,max_present_us,max_draw_us");
+        f.close();
+    }
+
+    fpsLogStartMs = millis();
+}
+
+static void doomFpsLogFrame(uint32_t waitUs, uint32_t presentUs, uint32_t hudUs, uint32_t drawUs) {
+    uint32_t nowMs = millis();
+
+    if (fpsLogStartMs == 0) {
+        fpsLogStartMs = nowMs;
+    }
+
+    fpsLogFrames++;
+
+    fpsWaitUs += waitUs;
+    fpsPresentUs += presentUs;
+    fpsHudUs += hudUs;
+    fpsDrawUs += drawUs;
+
+    if (waitUs > fpsMaxWaitUs) fpsMaxWaitUs = waitUs;
+    if (presentUs > fpsMaxPresentUs) fpsMaxPresentUs = presentUs;
+    if (drawUs > fpsMaxDrawUs) fpsMaxDrawUs = drawUs;
+
+    uint32_t windowMs = nowMs - fpsLogStartMs;
+
+    if (fpsLogFrames < 100 && windowMs < 1000) {
+        return;
+    }
+
+    uint32_t fps100 = windowMs ? (uint32_t)(((uint64_t)fpsLogFrames * 100000ULL) / windowMs) : 0;
+
+    File f = SD.open(DOOM_FPS_LOG_PATH, FILE_APPEND);
+    if (f) {
+        f.printf("%lu,%lu,%lu,%lu.%02lu,%lu,%lu,%lu,%lu,%lu,%lu,%lu\n",
+                 (unsigned long)nowMs,
+                 (unsigned long)windowMs,
+                 (unsigned long)fpsLogFrames,
+                 (unsigned long)(fps100 / 100),
+                 (unsigned long)(fps100 % 100),
+                 (unsigned long)(fpsWaitUs / fpsLogFrames),
+                 (unsigned long)(fpsPresentUs / fpsLogFrames),
+                 (unsigned long)(fpsHudUs / fpsLogFrames),
+                 (unsigned long)(fpsDrawUs / fpsLogFrames),
+                 (unsigned long)fpsMaxWaitUs,
+                 (unsigned long)fpsMaxPresentUs,
+                 (unsigned long)fpsMaxDrawUs);
+        f.close();
+    }
+
+    fpsLogStartMs = nowMs;
+    fpsLogFrames = 0;
+
+    fpsWaitUs = 0;
+    fpsPresentUs = 0;
+    fpsHudUs = 0;
+    fpsDrawUs = 0;
+
+    fpsMaxWaitUs = 0;
+    fpsMaxPresentUs = 0;
+    fpsMaxDrawUs = 0;
+}
+#endif
+//
+
 void buttonHandler(lilka::Button button, bool pressed) {
     
     xSemaphoreTake(inputMutex, portMAX_DELAY);
@@ -142,7 +231,7 @@ void buttonHandler(lilka::Button button, bool pressed) {
         case lilka::Button::A:
             key->key = KEY_FIRE;
             break;
-        case lilka::Button::B:
+       case lilka::Button::B:
             key->key = KEY_USE;
             break;
         case lilka::Button::C:
@@ -320,9 +409,9 @@ void setup() {
         ESP.getMinFreePsram()
     );
     // Back buffer must be allocated before doomgeneric_Create since it calls DG_DrawFrame
-    backBuffer = static_cast<uint32_t*>(malloc(DOOMGENERIC_RESX * DOOMGENERIC_RESY * 4));
+    backBuffer = static_cast<uint32_t*>(malloc(DOOMGENERIC_FRAMEBUFFER_BYTES));
     Serial.printf(
-        "[DOOM ALLOC] backBuffer=%p bytes=%u\n", backBuffer, (unsigned)(DOOMGENERIC_RESX * DOOMGENERIC_RESY * 4)
+        "[DOOM ALLOC] backBuffer=%p bytes=%u\n", backBuffer, (unsigned)DOOMGENERIC_FRAMEBUFFER_BYTES
     );
     Serial.println("[DOOM CREATE] doomgeneric_Create enter");
     doomgeneric_Create(argc, argv);
@@ -339,7 +428,16 @@ void setup() {
         rebootToKeiraOS();
     }
 
+    // Lilka v2 SELECT is GPIO0/BOOT. Re-apply runtime input mode after init.
+    //Restoration of SELECT button ESC MENU function.
+    pinMode(LILKA_GPIO_SELECT, INPUT_PULLUP);
     lilka::controller.setGlobalHandler(buttonHandler);
+
+    //Diagnostic patch
+    #if DOOM_FPS_SD_LOG
+     doomFpsLogInit();
+    #endif
+    //
 
     // while (1) {
     //     doomgeneric_Tick();
@@ -417,7 +515,16 @@ void gameTask(void* arg) {
 void drawTask(void* arg) {
     while (1) {
         // Wait for buffer to be ready
+       #if DOOM_FPS_SD_LOG
+            uint32_t waitStartUs = micros();
+        #endif
+
         xEventGroupWaitBits(backBufferEvent, 1, pdTRUE, pdTRUE, portMAX_DELAY);
+
+        #if DOOM_FPS_SD_LOG
+            uint32_t waitDoneUs = micros();
+        #endif
+
         xSemaphoreTake(backBufferMutex, portMAX_DELAY);
 
         // Calculate FPS
@@ -427,7 +534,15 @@ void drawTask(void* arg) {
 
         // Main Doom picture goes to the external ILI9488 TFT.
         // Doom native frame: 320x200 -> external TFT: 480x300 + black bars.
+        #if DOOM_FPS_SD_LOG
+            uint32_t presentStartUs = micros();
+        #endif
+
         externalTftPresentDoomFrame(backBuffer);
+
+        #if DOOM_FPS_SD_LOG
+            uint32_t presentDoneUs = micros();
+        #endif
 
         // Keep the stock Lilka display as cheap telemetry/debug HUD.
         lilka::display.setTextBound(0, 0, LILKA_DISPLAY_WIDTH, LILKA_DISPLAY_HEIGHT);
@@ -440,7 +555,20 @@ void drawTask(void* arg) {
         lilka::display.print("FPS: ");
         lilka::display.print(delta ? (1000 / delta) : 0);
 
+        #if DOOM_FPS_SD_LOG
+            uint32_t hudDoneUs = micros();
+
+            uint32_t waitUs = waitDoneUs - waitStartUs;
+            uint32_t presentUs = presentDoneUs - presentStartUs;
+            uint32_t hudUs = hudDoneUs - presentDoneUs;
+            uint32_t drawUs = hudDoneUs - waitDoneUs;
+        #endif
+
         xSemaphoreGive(backBufferMutex);
+
+        #if DOOM_FPS_SD_LOG
+            doomFpsLogFrame(waitUs, presentUs, hudUs, drawUs);
+        #endif
         taskYIELD();
     }
 }

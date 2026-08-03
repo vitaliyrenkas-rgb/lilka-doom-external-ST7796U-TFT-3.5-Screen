@@ -1,6 +1,7 @@
 #include "external_ili9488.h"
 
 #include <SPI.h>
+#include <string.h>
 
 extern "C" {
 #include "doomgeneric.h"
@@ -8,6 +9,12 @@ extern "C" {
 
 static SPIClass extSpi(FSPI);
 static bool extReady = false;
+static bool extTransactionActive = false;
+
+static bool scaleMapsReady = false;
+static uint16_t srcXMap[DOOM_PRESENT_W];
+// Offset in bytes into the proven packed RGB888 Doom framebuffer.
+static size_t srcYOffsetMap[DOOM_PRESENT_H];
 
 static inline void tftSelect() {
     digitalWrite(EXT_TFT_CS, LOW);
@@ -25,17 +32,19 @@ static inline void tftDataMode() {
     digitalWrite(EXT_TFT_DC, HIGH);
 }
 
+static void beginSpiTransaction(uint32_t hz) {
+    if (extTransactionActive) {
+        extSpi.endTransaction();
+    }
+
+    extSpi.beginTransaction(SPISettings(hz, MSBFIRST, SPI_MODE0));
+    extTransactionActive = true;
+}
+
 static void writeCommand(uint8_t cmd) {
     tftSelect();
     tftCommandMode();
     extSpi.write(cmd);
-    tftDeselect();
-}
-
-static void writeData8(uint8_t data) {
-    tftSelect();
-    tftDataMode();
-    extSpi.write(data);
     tftDeselect();
 }
 
@@ -72,40 +81,132 @@ static void setAddressWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
     writeCommand(0x2C); // RAMWR
 }
 
+static inline uint16_t packRgb565(uint8_t r, uint8_t g, uint8_t b) {
+    return static_cast<uint16_t>(
+        (static_cast<uint16_t>(r & 0xF8) << 8) |
+        (static_cast<uint16_t>(g & 0xFC) << 3) |
+        (b >> 3)
+    );
+}
+
+static inline void storePackedRgb888AsRgb565(const uint8_t* src, uint8_t* dst) {
+    const uint16_t color = packRgb565(src[0], src[1], src[2]);
+    dst[0] = static_cast<uint8_t>(color >> 8);
+    dst[1] = static_cast<uint8_t>(color & 0xff);
+}
+
+static void fillRect565(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t r, uint8_t g, uint8_t b) {
+    if (w == 0 || h == 0) {
+        return;
+    }
+
+    static uint8_t row[EXT_TFT_W * 2];
+    const uint16_t color = packRgb565(r, g, b);
+    const uint8_t hi = static_cast<uint8_t>(color >> 8);
+    const uint8_t lo = static_cast<uint8_t>(color & 0xff);
+    const size_t rowBytes = static_cast<size_t>(w) * 2u;
+
+    for (uint16_t px = 0; px < w; ++px) {
+        row[px * 2 + 0] = hi;
+        row[px * 2 + 1] = lo;
+    }
+
+    setAddressWindow(x, y, w, h);
+    tftSelect();
+    tftDataMode();
+    for (uint16_t py = 0; py < h; ++py) {
+        extSpi.writeBytes(row, rowBytes);
+    }
+    tftDeselect();
+}
+
+static void initST7796U() {
+    // Exact controller sequence from the validated FFC CORE #013/#015B path.
+    writeCommand(0x01); // Software reset
+    delay(120);
+
+    writeCommand(0x11); // Sleep out
+    delay(120);
+
+    const uint8_t extCommandPart1[] = {0xC3};
+    writeCommandData(0xF0, extCommandPart1, sizeof(extCommandPart1));
+    const uint8_t extCommandPart2[] = {0x96};
+    writeCommandData(0xF0, extCommandPart2, sizeof(extCommandPart2));
+
+    const uint8_t madctl[] = {0xE8};
+    writeCommandData(0x36, madctl, sizeof(madctl));
+
+    const uint8_t pixelFormat[] = {0x55}; // RGB565, 2 bytes/pixel
+    writeCommandData(0x3A, pixelFormat, sizeof(pixelFormat));
+
+    const uint8_t inversionControl[] = {0x01};
+    writeCommandData(0xB4, inversionControl, sizeof(inversionControl));
+
+    const uint8_t displayFunction[] = {0x80, 0x02, 0x3B};
+    writeCommandData(0xB6, displayFunction, sizeof(displayFunction));
+
+    const uint8_t displayOutputAdjust[] = {
+        0x40, 0x8A, 0x00, 0x00, 0x29, 0x19, 0xA5, 0x33,
+    };
+    writeCommandData(0xE8, displayOutputAdjust, sizeof(displayOutputAdjust));
+
+    const uint8_t powerControl2[] = {0x06};
+    writeCommandData(0xC1, powerControl2, sizeof(powerControl2));
+    const uint8_t powerControl3[] = {0xA7};
+    writeCommandData(0xC2, powerControl3, sizeof(powerControl3));
+    const uint8_t vcomControl[] = {0x18};
+    writeCommandData(0xC5, vcomControl, sizeof(vcomControl));
+    delay(120);
+
+    const uint8_t positiveGamma[] = {
+        0xF0, 0x09, 0x0B, 0x06, 0x04, 0x15, 0x2F,
+        0x54, 0x42, 0x3C, 0x17, 0x14, 0x18, 0x1B,
+    };
+    writeCommandData(0xE0, positiveGamma, sizeof(positiveGamma));
+
+    const uint8_t negativeGamma[] = {
+        0xE0, 0x09, 0x0B, 0x06, 0x04, 0x03, 0x2B,
+        0x43, 0x42, 0x3B, 0x16, 0x14, 0x17, 0x1B,
+    };
+    writeCommandData(0xE1, negativeGamma, sizeof(negativeGamma));
+    delay(120);
+
+    const uint8_t disableExtCommandPart1[] = {0x3C};
+    writeCommandData(0xF0, disableExtCommandPart1, sizeof(disableExtCommandPart1));
+    const uint8_t disableExtCommandPart2[] = {0x69};
+    writeCommandData(0xF0, disableExtCommandPart2, sizeof(disableExtCommandPart2));
+
+    delay(120);
+    writeCommand(0x13); // Normal display mode on
+    delay(20);
+    writeCommand(0x21); // Inversion on
+    delay(20);
+    writeCommand(0x29); // Display on
+    delay(120);
+}
+
 bool externalTftBegin() {
     pinMode(EXT_TFT_CS, OUTPUT);
     pinMode(EXT_TFT_DC, OUTPUT);
     pinMode(EXT_TFT_RST, OUTPUT);
+    pinMode(EXT_TFT_BL, INPUT); // BL is externally powered; never drive it.
+
     digitalWrite(EXT_TFT_CS, HIGH);
     digitalWrite(EXT_TFT_DC, HIGH);
+    digitalWrite(EXT_TFT_RST, HIGH);
 
+    delay(50);
     digitalWrite(EXT_TFT_RST, LOW);
-    delay(30);
+    delay(80);
     digitalWrite(EXT_TFT_RST, HIGH);
     delay(150);
 
-    // Use a conservative SPI speed for the first Doom multiboot proof.
-    // After picture is stable, this can be raised and benchmarked.
     extSpi.begin(EXT_TFT_SCK, -1, EXT_TFT_MOSI, EXT_TFT_CS);
-    extSpi.beginTransaction(SPISettings(40000000, MSBFIRST, SPI_MODE0));
+    beginSpiTransaction(EXT_TFT_INIT_SPI_HZ);
 
-    writeCommand(0x01); // Software reset
-    delay(120);
-    writeCommand(0x11); // Sleep out
-    delay(120);
+    initST7796U();
 
-    // ILI9488 SPI commonly expects RGB666 / 18-bit pixel writes.
-    const uint8_t pixfmt[] = {0x66};
-    writeCommandData(0x3A, pixfmt, sizeof(pixfmt));
-
-    // Landscape 480x320. This matched the KeiraOS external TFT milestone.
-    const uint8_t madctl[] = {0xE8};
-    writeCommandData(0x36, madctl, sizeof(madctl));
-
-    writeCommand(0x20); // Display inversion off
-    writeCommand(0x29); // Display on
-    delay(50);
-
+    beginSpiTransaction(EXT_TFT_BULK_SPI_HZ);
     extReady = true;
     externalTftClear(0, 0, 0);
     return true;
@@ -116,69 +217,116 @@ void externalTftClear(uint8_t r, uint8_t g, uint8_t b) {
         return;
     }
 
-    static uint8_t row[EXT_TFT_W * 3];
-    for (int x = 0; x < EXT_TFT_W; ++x) {
-        row[x * 3 + 0] = r;
-        row[x * 3 + 1] = g;
-        row[x * 3 + 2] = b;
-    }
-
-    setAddressWindow(0, 0, EXT_TFT_W, EXT_TFT_H);
-    tftSelect();
-    tftDataMode();
-    for (int y = 0; y < EXT_TFT_H; ++y) {
-        extSpi.writeBytes(row, sizeof(row));
-    }
-    tftDeselect();
+    fillRect565(0, 0, EXT_TFT_W, EXT_TFT_H, r, g, b);
 }
 
 static void drawSolidRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t r, uint8_t g, uint8_t b) {
-    static uint8_t row[EXT_TFT_W * 3];
-    const size_t bytes = static_cast<size_t>(w) * 3;
-    for (uint16_t px = 0; px < w; ++px) {
-        row[px * 3 + 0] = r;
-        row[px * 3 + 1] = g;
-        row[px * 3 + 2] = b;
+    fillRect565(x, y, w, h, r, g, b);
+}
+
+static void buildScaleMaps() {
+    if (scaleMapsReady) {
+        return;
     }
 
-    setAddressWindow(x, y, w, h);
-    tftSelect();
-    tftDataMode();
-    for (uint16_t py = 0; py < h; ++py) {
-        extSpi.writeBytes(row, bytes);
+    for (uint16_t x = 0; x < DOOM_PRESENT_W; ++x) {
+        srcXMap[x] = (static_cast<uint32_t>(x) * DOOMGENERIC_RESX) / DOOM_PRESENT_W;
     }
-    tftDeselect();
+
+    const size_t srcStride = static_cast<size_t>(DOOMGENERIC_RESX) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
+
+    for (uint16_t y = 0; y < DOOM_PRESENT_H; ++y) {
+        const uint16_t sy = (static_cast<uint32_t>(y) * DOOMGENERIC_RESY) / DOOM_PRESENT_H;
+        srcYOffsetMap[y] = static_cast<size_t>(sy) * srcStride;
+    }
+
+    scaleMapsReady = true;
 }
+
+#define DOOM_TFT_SCALE_320X200_TO_400X250_RGB565 \
+    (DOOMGENERIC_FRAMEBUFFER_RGB888_PACKED && \
+     DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL == 3 && \
+     DOOMGENERIC_RESX == 320 && \
+     DOOMGENERIC_RESY == 200 && \
+     DOOM_PRESENT_W == 400 && \
+     DOOM_PRESENT_H == 250)
+
+#if DOOM_TFT_SCALE_320X200_TO_400X250_RGB565
+static inline void expandDoomRow320To400Rgb565(const uint8_t* src, uint8_t* dst) {
+    // Preserve the proven exact 5:4 horizontal mapping:
+    // four source pixels become five TFT pixels: 0,0,1,2,3.
+    for (int group = 0; group < 80; ++group) {
+        const uint8_t* s = src + static_cast<size_t>(group) * 12u;
+        uint8_t* d = dst + static_cast<size_t>(group) * 10u;
+
+        storePackedRgb888AsRgb565(s + 0, d + 0);
+        storePackedRgb888AsRgb565(s + 0, d + 2);
+        storePackedRgb888AsRgb565(s + 3, d + 4);
+        storePackedRgb888AsRgb565(s + 6, d + 6);
+        storePackedRgb888AsRgb565(s + 9, d + 8);
+    }
+}
+#endif
 
 void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
     if (!extReady || framebuffer == nullptr) {
         return;
     }
 
+    buildScaleMaps();
+
     static bool barsDrawn = false;
     if (!barsDrawn) {
         drawSolidRect(0, 0, EXT_TFT_W, DOOM_PRESENT_Y, 0, 0, 0);
         drawSolidRect(
-            0, DOOM_PRESENT_Y + DOOM_PRESENT_H, EXT_TFT_W, EXT_TFT_H - DOOM_PRESENT_Y - DOOM_PRESENT_H, 0, 0, 0
+            0,
+            DOOM_PRESENT_Y + DOOM_PRESENT_H,
+            EXT_TFT_W,
+            EXT_TFT_H - DOOM_PRESENT_Y - DOOM_PRESENT_H,
+            0,
+            0,
+            0
         );
         barsDrawn = true;
     }
 
-    static uint8_t row[DOOM_PRESENT_W * 3];
+    const uint8_t* packed = reinterpret_cast<const uint8_t*>(framebuffer);
+
     setAddressWindow(DOOM_PRESENT_X, DOOM_PRESENT_Y, DOOM_PRESENT_W, DOOM_PRESENT_H);
 
     tftSelect();
     tftDataMode();
-    for (int y = 0; y < DOOM_PRESENT_H; ++y) {
-        const int sy = (y * DOOMGENERIC_RESY) / DOOM_PRESENT_H; // 0..199
-        for (int x = 0; x < DOOM_PRESENT_W; ++x) {
-            const int sx = (x * DOOMGENERIC_RESX) / DOOM_PRESENT_W; // 0..319
-            const uint32_t pixel = framebuffer[sy * DOOMGENERIC_RESX + sx];
-            row[x * 3 + 0] = static_cast<uint8_t>((pixel >> 16) & 0xff);
-            row[x * 3 + 1] = static_cast<uint8_t>((pixel >> 8) & 0xff);
-            row[x * 3 + 2] = static_cast<uint8_t>(pixel & 0xff);
+
+    static constexpr int CHUNK_ROWS = 4;
+    static uint8_t rows[CHUNK_ROWS * DOOM_PRESENT_W * 2];
+    const size_t rowBytes = static_cast<size_t>(DOOM_PRESENT_W) * 2u;
+
+    for (int y = 0; y < DOOM_PRESENT_H; y += CHUNK_ROWS) {
+        const int remainingRows = DOOM_PRESENT_H - y;
+        const int rowsThisChunk = (remainingRows < CHUNK_ROWS) ? remainingRows : CHUNK_ROWS;
+
+        for (int chunkY = 0; chunkY < rowsThisChunk; ++chunkY) {
+            const uint16_t outY = static_cast<uint16_t>(y + chunkY);
+            const size_t srcOffset = srcYOffsetMap[outY];
+            const uint8_t* src = packed + srcOffset;
+            uint8_t* row = rows + static_cast<size_t>(chunkY) * rowBytes;
+
+#if DOOM_TFT_SCALE_320X200_TO_400X250_RGB565
+            if (chunkY > 0 && srcOffset == srcYOffsetMap[outY - 1]) {
+                memcpy(row, row - rowBytes, rowBytes);
+            } else {
+                expandDoomRow320To400Rgb565(src, row);
+            }
+#else
+            for (int x = 0; x < DOOM_PRESENT_W; ++x) {
+                const uint8_t* sp = src + static_cast<size_t>(srcXMap[x]) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
+                storePackedRgb888AsRgb565(sp, row + static_cast<size_t>(x) * 2u);
+            }
+#endif
         }
-        extSpi.writeBytes(row, sizeof(row));
+
+        extSpi.writeBytes(rows, rowBytes * static_cast<size_t>(rowsThisChunk));
     }
+
     tftDeselect();
 }

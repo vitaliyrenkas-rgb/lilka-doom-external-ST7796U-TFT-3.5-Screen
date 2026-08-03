@@ -634,14 +634,12 @@ void M_DoSave(int slot)
 //
 void M_SaveSelect(int choice)
 {
-    // we are going to be intercepting all chars
-    saveStringEnter = 1;
-    
     saveSlot = choice;
-    M_StringCopy(saveOldString,savegamestrings[choice], SAVESTRINGSIZE);
-    if (!strcmp(savegamestrings[choice], EMPTYSTRING))
-	savegamestrings[choice][0] = 0;
-    saveCharIndex = strlen(savegamestrings[choice]);
+
+    DEH_snprintf(savegamestrings[choice], SAVESTRINGSIZE,
+                 "LILKA SAVE %d", choice + 1);
+
+    M_DoSave(choice);
 }
 
 //
