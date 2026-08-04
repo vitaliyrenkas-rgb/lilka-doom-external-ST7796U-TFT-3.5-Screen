@@ -29,13 +29,13 @@
 #define EXT_TFT_INIT_SPI_HZ 15000000UL
 #define EXT_TFT_BULK_SPI_HZ 125000000UL
 
-// Keep the proven ILI9488 Doom presentation geometry unchanged.
-// Doom native framebuffer: 320x200 packed RGB888.
-// External presentation: exact 5:4 expansion to 400x250, centered.
+// Doom native framebuffer: 320x200 packed wire-order RGB565.
+// Full-frame ST7796U test: exact 5:4 horizontal and 3:2 vertical
+// expansion to 400x300, centered with 10-pixel top/bottom bars.
 #define DOOM_PRESENT_W 400
-#define DOOM_PRESENT_H 250
+#define DOOM_PRESENT_H 300
 #define DOOM_PRESENT_X 40
-#define DOOM_PRESENT_Y 35
+#define DOOM_PRESENT_Y 10
 
 bool externalTftBegin();
 void externalTftClear(uint8_t r, uint8_t g, uint8_t b);

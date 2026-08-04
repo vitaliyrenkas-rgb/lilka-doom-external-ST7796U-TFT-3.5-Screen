@@ -125,7 +125,7 @@ typedef struct
 // Palette converted to RGB565
 
 static uint16_t rgb565_palette[256];
-static uint8_t rgb888_palette[256][3];
+static uint16_t rgb565_wire_palette[256];
 
 void cmap_to_rgb565(uint16_t * out, uint8_t * in, int in_pixels)
 {
@@ -148,20 +148,17 @@ void cmap_to_rgb565(uint16_t * out, uint8_t * in, int in_pixels)
     }
 }
 
-void cmap_to_rgb888_packed(uint8_t * out, uint8_t * in, int in_pixels)
+void cmap_to_rgb565_wire(uint16_t * out, uint8_t * in, int in_pixels)
 {
     int i, k;
 
     for (i = 0; i < in_pixels; i++)
     {
-        const uint8_t *rgb = rgb888_palette[*in];
+        const uint16_t pixel = rgb565_wire_palette[*in++];
 
         for (k = 0; k < fb_scaling; k++) {
-            *out++ = rgb[0];
-            *out++ = rgb[1];
-            *out++ = rgb[2];
+            *out++ = pixel;
         }
-        in++;
     }
 }
 
@@ -203,15 +200,16 @@ void I_InitGraphics (void)
 	s_Fb.yres_virtual = s_Fb.yres;
 	s_Fb.bits_per_pixel = DOOMGENERIC_FRAMEBUFFER_BPP;
 
-	s_Fb.red.length = 8;
-	s_Fb.green.length = 8;
-	s_Fb.blue.length = 8;
+	s_Fb.red.length = 5;
+	s_Fb.green.length = 6;
+	s_Fb.blue.length = 5;
 	s_Fb.transp.length = 0;
 
-	// Packed byte order in DG_ScreenBuffer is R, G, B.
-	s_Fb.red.offset = 0;
-	s_Fb.green.offset = 8;
-	s_Fb.blue.offset = 16;
+	// DG_ScreenBuffer stores RGB565 words byte-swapped so memory is already
+	// in ST7796U wire order: high byte followed by low byte.
+	s_Fb.red.offset = 11;
+	s_Fb.green.offset = 5;
+	s_Fb.blue.offset = 0;
 	s_Fb.transp.offset = 0;
 	
 
@@ -302,10 +300,9 @@ void I_FinishUpdate (void)
                 //XXX FIXME fb_scaling support!
             }
 #else
-#if DOOMGENERIC_FRAMEBUFFER_RGB888_PACKED
-            cmap_to_rgb888_packed((void*)line_out, (void*)line_in, SCREENWIDTH);
+#if DOOMGENERIC_FRAMEBUFFER_RGB565_WIRE_ORDER
+            cmap_to_rgb565_wire((uint16_t*)line_out, (void*)line_in, SCREENWIDTH);
 #else
-            //cmap_to_rgb565((void*)line_out, (void*)line_in, SCREENWIDTH);
             cmap_to_fb((void*)line_out, (void*)line_in, SCREENWIDTH);
 #endif
 #endif
@@ -363,9 +360,8 @@ void I_SetPalette (byte* palette)
         colors[i].g = g;
         colors[i].b = b;
 
-        rgb888_palette[i][0] = r;
-        rgb888_palette[i][1] = g;
-        rgb888_palette[i][2] = b;
+        rgb565_palette[i] = GFX_RGB565(r, g, b);
+        rgb565_wire_palette[i] = (uint16_t)((rgb565_palette[i] >> 8) | (rgb565_palette[i] << 8));
     }
 }
 

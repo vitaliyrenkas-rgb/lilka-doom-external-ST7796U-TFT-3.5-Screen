@@ -243,27 +243,35 @@ static void buildScaleMaps() {
     scaleMapsReady = true;
 }
 
-#define DOOM_TFT_SCALE_320X200_TO_400X250_RGB565 \
-    (DOOMGENERIC_FRAMEBUFFER_RGB888_PACKED && \
-     DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL == 3 && \
+#define DOOM_TFT_SCALE_320X200_TO_400X300_RGB565 \
+    (DOOMGENERIC_FRAMEBUFFER_RGB565_WIRE_ORDER && \
+     DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL == 2 && \
      DOOMGENERIC_RESX == 320 && \
      DOOMGENERIC_RESY == 200 && \
      DOOM_PRESENT_W == 400 && \
-     DOOM_PRESENT_H == 250)
+     DOOM_PRESENT_H == 300)
 
-#if DOOM_TFT_SCALE_320X200_TO_400X250_RGB565
-static inline void expandDoomRow320To400Rgb565(const uint8_t* src, uint8_t* dst) {
-    // Preserve the proven exact 5:4 horizontal mapping:
-    // four source pixels become five TFT pixels: 0,0,1,2,3.
+#if DOOM_TFT_SCALE_320X200_TO_400X300_RGB565
+static inline void expandDoomRow320To400Rgb565(
+    const uint16_t* src,
+    uint16_t* dst
+) {
+    // Exact 5:4 mapping: four source pixels become five TFT pixels
+    // (0,0,1,2,3). Source words are already in wire byte order.
     for (int group = 0; group < 80; ++group) {
-        const uint8_t* s = src + static_cast<size_t>(group) * 12u;
-        uint8_t* d = dst + static_cast<size_t>(group) * 10u;
+        const uint16_t p0 = src[0];
+        const uint16_t p1 = src[1];
+        const uint16_t p2 = src[2];
+        const uint16_t p3 = src[3];
 
-        storePackedRgb888AsRgb565(s + 0, d + 0);
-        storePackedRgb888AsRgb565(s + 0, d + 2);
-        storePackedRgb888AsRgb565(s + 3, d + 4);
-        storePackedRgb888AsRgb565(s + 6, d + 6);
-        storePackedRgb888AsRgb565(s + 9, d + 8);
+        dst[0] = p0;
+        dst[1] = p0;
+        dst[2] = p1;
+        dst[3] = p2;
+        dst[4] = p3;
+
+        src += 4;
+        dst += 5;
     }
 }
 #endif
@@ -297,8 +305,43 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
     tftSelect();
     tftDataMode();
 
+#if DOOM_TFT_SCALE_320X200_TO_400X300_RGB565
+    // Exact 3:2 vertical mapping. Eight source rows become twelve TFT rows:
+    // A,A,B, C,C,D, E,E,F, G,G,H. One 9600-byte SPI call per chunk.
+    static constexpr int SOURCE_ROWS_PER_CHUNK = 8;
+    static constexpr int OUTPUT_ROWS_PER_CHUNK = 12;
+    static constexpr size_t SOURCE_ROW_BYTES =
+        static_cast<size_t>(DOOMGENERIC_RESX) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
+    static constexpr size_t OUTPUT_ROW_BYTES = static_cast<size_t>(DOOM_PRESENT_W) * 2u;
+    alignas(4) static uint8_t rows[OUTPUT_ROWS_PER_CHUNK * OUTPUT_ROW_BYTES];
+
+    for (int srcY = 0; srcY < DOOMGENERIC_RESY; srcY += SOURCE_ROWS_PER_CHUNK) {
+        int outputRow = 0;
+
+        for (int pair = 0; pair < SOURCE_ROWS_PER_CHUNK; pair += 2) {
+            const uint16_t* srcA = reinterpret_cast<const uint16_t*>(
+                packed + static_cast<size_t>(srcY + pair) * SOURCE_ROW_BYTES
+            );
+            const uint16_t* srcB = srcA + DOOMGENERIC_RESX;
+
+            uint16_t* rowA = reinterpret_cast<uint16_t*>(
+                rows + static_cast<size_t>(outputRow) * OUTPUT_ROW_BYTES
+            );
+            uint16_t* rowADuplicate = rowA + DOOM_PRESENT_W;
+            uint16_t* rowB = rowADuplicate + DOOM_PRESENT_W;
+
+            expandDoomRow320To400Rgb565(srcA, rowA);
+            memcpy(rowADuplicate, rowA, OUTPUT_ROW_BYTES);
+            expandDoomRow320To400Rgb565(srcB, rowB);
+
+            outputRow += 3;
+        }
+
+        extSpi.writeBytes(rows, OUTPUT_ROWS_PER_CHUNK * OUTPUT_ROW_BYTES);
+    }
+#else
     static constexpr int CHUNK_ROWS = 4;
-    static uint8_t rows[CHUNK_ROWS * DOOM_PRESENT_W * 2];
+    alignas(4) static uint8_t rows[CHUNK_ROWS * DOOM_PRESENT_W * 2];
     const size_t rowBytes = static_cast<size_t>(DOOM_PRESENT_W) * 2u;
 
     for (int y = 0; y < DOOM_PRESENT_H; y += CHUNK_ROWS) {
@@ -307,26 +350,27 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
 
         for (int chunkY = 0; chunkY < rowsThisChunk; ++chunkY) {
             const uint16_t outY = static_cast<uint16_t>(y + chunkY);
-            const size_t srcOffset = srcYOffsetMap[outY];
-            const uint8_t* src = packed + srcOffset;
-            uint8_t* row = rows + static_cast<size_t>(chunkY) * rowBytes;
+            const uint8_t* src = packed + srcYOffsetMap[outY];
+            uint16_t* row = reinterpret_cast<uint16_t*>(
+                rows + static_cast<size_t>(chunkY) * rowBytes
+            );
 
-#if DOOM_TFT_SCALE_320X200_TO_400X250_RGB565
-            if (chunkY > 0 && srcOffset == srcYOffsetMap[outY - 1]) {
-                memcpy(row, row - rowBytes, rowBytes);
-            } else {
-                expandDoomRow320To400Rgb565(src, row);
+#if DOOMGENERIC_FRAMEBUFFER_RGB565_WIRE_ORDER
+            const uint16_t* srcPixels = reinterpret_cast<const uint16_t*>(src);
+            for (int x = 0; x < DOOM_PRESENT_W; ++x) {
+                row[x] = srcPixels[srcXMap[x]];
             }
 #else
             for (int x = 0; x < DOOM_PRESENT_W; ++x) {
                 const uint8_t* sp = src + static_cast<size_t>(srcXMap[x]) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
-                storePackedRgb888AsRgb565(sp, row + static_cast<size_t>(x) * 2u);
+                storePackedRgb888AsRgb565(sp, reinterpret_cast<uint8_t*>(row + x));
             }
 #endif
         }
 
         extSpi.writeBytes(rows, rowBytes * static_cast<size_t>(rowsThisChunk));
     }
+#endif
 
     tftDeselect();
 }
