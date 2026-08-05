@@ -243,35 +243,31 @@ static void buildScaleMaps() {
     scaleMapsReady = true;
 }
 
-#define DOOM_TFT_SCALE_320X200_TO_400X300_RGB565 \
+#define DOOM_TFT_SCALE_320X200_TO_480X300_RGB565 \
     (DOOMGENERIC_FRAMEBUFFER_RGB565_WIRE_ORDER && \
      DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL == 2 && \
      DOOMGENERIC_RESX == 320 && \
      DOOMGENERIC_RESY == 200 && \
-     DOOM_PRESENT_W == 400 && \
+     DOOM_PRESENT_W == 480 && \
      DOOM_PRESENT_H == 300)
 
-#if DOOM_TFT_SCALE_320X200_TO_400X300_RGB565
-static inline void expandDoomRow320To400Rgb565(
+#if DOOM_TFT_SCALE_320X200_TO_480X300_RGB565
+static inline void expandDoomRow320To480Rgb565(
     const uint16_t* src,
     uint16_t* dst
 ) {
-    // Exact 5:4 mapping: four source pixels become five TFT pixels
-    // (0,0,1,2,3). Source words are already in wire byte order.
-    for (int group = 0; group < 80; ++group) {
+    // Exact 3:2 mapping: two source pixels become three TFT pixels
+    // (0,0,1). Source words are already in wire byte order.
+    for (int group = 0; group < 160; ++group) {
         const uint16_t p0 = src[0];
         const uint16_t p1 = src[1];
-        const uint16_t p2 = src[2];
-        const uint16_t p3 = src[3];
 
         dst[0] = p0;
         dst[1] = p0;
         dst[2] = p1;
-        dst[3] = p2;
-        dst[4] = p3;
 
-        src += 4;
-        dst += 5;
+        src += 2;
+        dst += 3;
     }
 }
 #endif
@@ -305,9 +301,9 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
     tftSelect();
     tftDataMode();
 
-#if DOOM_TFT_SCALE_320X200_TO_400X300_RGB565
+#if DOOM_TFT_SCALE_320X200_TO_480X300_RGB565
     // Exact 3:2 vertical mapping. Eight source rows become twelve TFT rows:
-    // A,A,B, C,C,D, E,E,F, G,G,H. One 9600-byte SPI call per chunk.
+    // A,A,B, C,C,D, E,E,F, G,G,H. One 11520-byte SPI call per chunk.
     static constexpr int SOURCE_ROWS_PER_CHUNK = 8;
     static constexpr int OUTPUT_ROWS_PER_CHUNK = 12;
     static constexpr size_t SOURCE_ROW_BYTES =
@@ -330,9 +326,9 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
             uint16_t* rowADuplicate = rowA + DOOM_PRESENT_W;
             uint16_t* rowB = rowADuplicate + DOOM_PRESENT_W;
 
-            expandDoomRow320To400Rgb565(srcA, rowA);
+            expandDoomRow320To480Rgb565(srcA, rowA);
             memcpy(rowADuplicate, rowA, OUTPUT_ROW_BYTES);
-            expandDoomRow320To400Rgb565(srcB, rowB);
+            expandDoomRow320To480Rgb565(srcB, rowB);
 
             outputRow += 3;
         }
