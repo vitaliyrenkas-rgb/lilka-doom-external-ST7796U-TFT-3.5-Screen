@@ -30,12 +30,12 @@
 #define EXT_TFT_BULK_SPI_HZ 80000000UL
 
 // Doom native framebuffer: 320x200 packed wire-order RGB565.
-// Full-width ST7796U test: exact 3:2 horizontal and 3:2 vertical
-// expansion to 480x300, with 10-pixel top/bottom bars.
-#define DOOM_PRESENT_W 480
-#define DOOM_PRESENT_H 300
-#define DOOM_PRESENT_X 0
-#define DOOM_PRESENT_Y 10
+// VANILLA 35 transport test: exact 5:4 horizontal and 5:4 vertical
+// expansion to centered 400x250, with black borders on the 480x320 panel.
+#define DOOM_PRESENT_W 400
+#define DOOM_PRESENT_H 250
+#define DOOM_PRESENT_X 40
+#define DOOM_PRESENT_Y 35
 
 bool externalTftBegin();
 void externalTftClear(uint8_t r, uint8_t g, uint8_t b);

@@ -13,10 +13,10 @@ static constexpr spi_host_device_t EXT_TFT_SPI_HOST = SPI2_HOST;
 
 // Keep every Doom bulk transfer inside one ESP-IDF DMA descriptor.
 // ESP-IDF v4.4 defines SPI_MAX_DMA_LEN as 4092 bytes.
-// Exact 3:2 vertical scaling maps two source rows -> three TFT rows:
-// 3 * 480 * 2 = 2880 bytes per transfer.
-static constexpr int DMA_SOURCE_ROWS_PER_CHUNK = 2;
-static constexpr int DMA_OUTPUT_ROWS_PER_CHUNK = 3;
+// Exact 5:4 vertical scaling maps four source rows -> five TFT rows:
+// 5 * 400 * 2 = 4000 bytes per transfer.
+static constexpr int DMA_SOURCE_ROWS_PER_CHUNK = 4;
+static constexpr int DMA_OUTPUT_ROWS_PER_CHUNK = 5;
 static constexpr size_t DMA_OUTPUT_ROW_BYTES =
     static_cast<size_t>(DOOM_PRESENT_W) * 2u;
 static constexpr size_t DMA_CHUNK_BYTES =
@@ -423,29 +423,35 @@ static void buildScaleMaps() {
     scaleMapsReady = true;
 }
 
-#define DOOM_TFT_SCALE_320X200_TO_480X300_RGB565 \
+#define DOOM_TFT_SCALE_320X200_TO_400X250_RGB565 \
     (DOOMGENERIC_FRAMEBUFFER_RGB565_WIRE_ORDER && \
      DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL == 2 && \
      DOOMGENERIC_RESX == 320 && \
      DOOMGENERIC_RESY == 200 && \
-     DOOM_PRESENT_W == 480 && \
-     DOOM_PRESENT_H == 300)
+     DOOM_PRESENT_W == 400 && \
+     DOOM_PRESENT_H == 250)
 
-#if DOOM_TFT_SCALE_320X200_TO_480X300_RGB565
-static inline void expandDoomRow320To480Rgb565(
+#if DOOM_TFT_SCALE_320X200_TO_400X250_RGB565
+static inline void expandDoomRow320To400Rgb565(
     const uint16_t* src,
     uint16_t* dst
 ) {
-    for (int group = 0; group < 160; ++group) {
+    // Exact nearest-neighbor 5:4 mapping:
+    // four source pixels -> five TFT pixels as A,A,B,C,D.
+    for (int group = 0; group < 80; ++group) {
         const uint16_t p0 = src[0];
         const uint16_t p1 = src[1];
+        const uint16_t p2 = src[2];
+        const uint16_t p3 = src[3];
 
         dst[0] = p0;
         dst[1] = p0;
         dst[2] = p1;
+        dst[3] = p2;
+        dst[4] = p3;
 
-        src += 2;
-        dst += 3;
+        src += 4;
+        dst += 5;
     }
 }
 #endif
@@ -489,7 +495,7 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
         return;
     }
 
-#if DOOM_TFT_SCALE_320X200_TO_480X300_RGB565
+#if DOOM_TFT_SCALE_320X200_TO_400X250_RGB565
     static constexpr size_t SOURCE_ROW_BYTES =
         static_cast<size_t>(DOOMGENERIC_RESX) *
         DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
@@ -525,6 +531,10 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
             );
         const uint16_t* srcB =
             srcA + DOOMGENERIC_RESX;
+        const uint16_t* srcC =
+            srcB + DOOMGENERIC_RESX;
+        const uint16_t* srcD =
+            srcC + DOOMGENERIC_RESX;
 
         uint16_t* rowA =
             reinterpret_cast<uint16_t*>(doomChunk);
@@ -532,14 +542,20 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
             rowA + DOOM_PRESENT_W;
         uint16_t* rowB =
             rowADuplicate + DOOM_PRESENT_W;
+        uint16_t* rowC =
+            rowB + DOOM_PRESENT_W;
+        uint16_t* rowD =
+            rowC + DOOM_PRESENT_W;
 
-        expandDoomRow320To480Rgb565(srcA, rowA);
+        expandDoomRow320To400Rgb565(srcA, rowA);
         memcpy(
             rowADuplicate,
             rowA,
             DMA_OUTPUT_ROW_BYTES
         );
-        expandDoomRow320To480Rgb565(srcB, rowB);
+        expandDoomRow320To400Rgb565(srcB, rowB);
+        expandDoomRow320To400Rgb565(srcC, rowC);
+        expandDoomRow320To400Rgb565(srcD, rowD);
 
         const bool isLastChunk =
             srcY + DMA_SOURCE_ROWS_PER_CHUNK >=
