@@ -23,9 +23,21 @@ static constexpr size_t DMA_CHUNK_BYTES =
     static_cast<size_t>(DMA_OUTPUT_ROWS_PER_CHUNK) *
     DMA_OUTPUT_ROW_BYTES;
 
+// Verified QUALITY mode geometry from commit 09b108c.
+// Two native rows -> three 480-pixel output rows = 2880 bytes.
+static constexpr uint16_t QUALITY_PRESENT_W = 480;
+static constexpr uint16_t QUALITY_PRESENT_H = 300;
+static constexpr uint16_t QUALITY_PRESENT_X = 0;
+static constexpr uint16_t QUALITY_PRESENT_Y = 10;
+static constexpr size_t QUALITY_OUTPUT_ROW_BYTES =
+    static_cast<size_t>(QUALITY_PRESENT_W) * 2u;
+static constexpr size_t QUALITY_CHUNK_BYTES =
+    static_cast<size_t>(3) * QUALITY_OUTPUT_ROW_BYTES;
+
 static spi_device_handle_t extSpiDevice = nullptr;
 static bool extReady = false;
 static bool extTransportOk = true;
+static DoomDisplayMode doomDisplayMode = DoomDisplayMode::VANILLA_400X250;
 
 DMA_ATTR static uint8_t fillRow[EXT_TFT_W * 2];
 DMA_ATTR static uint8_t doomChunk[DMA_CHUNK_BYTES];
@@ -394,6 +406,14 @@ void externalTftClear(uint8_t r, uint8_t g, uint8_t b) {
     fillRect565(0, 0, EXT_TFT_W, EXT_TFT_H, r, g, b);
 }
 
+void externalTftSetDoomDisplayMode(DoomDisplayMode mode) {
+    doomDisplayMode = mode;
+
+    if (extReady && extTransportOk) {
+        externalTftClear(0, 0, 0);
+    }
+}
+
 static void drawSolidRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t r, uint8_t g, uint8_t b) {
     fillRect565(x, y, w, h, r, g, b);
 }
@@ -454,6 +474,91 @@ static inline void expandDoomRow320To400Rgb565(
         dst += 5;
     }
 }
+
+static inline void expandDoomRow320To480Rgb565(
+    const uint16_t* src,
+    uint16_t* dst
+) {
+    // Verified exact 3:2 mapping from 09b108c:
+    // two source pixels -> three TFT pixels as A,A,B.
+    for (int group = 0; group < 160; ++group) {
+        const uint16_t p0 = src[0];
+        const uint16_t p1 = src[1];
+
+        dst[0] = p0;
+        dst[1] = p0;
+        dst[2] = p1;
+
+        src += 2;
+        dst += 3;
+    }
+}
+
+static void presentQuality480x300(const uint8_t* packed) {
+    static constexpr size_t SOURCE_ROW_BYTES =
+        static_cast<size_t>(DOOMGENERIC_RESX) *
+        DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
+
+    setAddressWindow(
+        QUALITY_PRESENT_X,
+        QUALITY_PRESENT_Y,
+        QUALITY_PRESENT_W,
+        QUALITY_PRESENT_H
+    );
+    if (!extTransportOk) {
+        return;
+    }
+
+    if (
+        spi_device_acquire_bus(
+            extSpiDevice,
+            portMAX_DELAY
+        ) != ESP_OK
+    ) {
+        extTransportOk = false;
+        return;
+    }
+
+    const uint8_t ramWriteCommand = 0x2C;
+    bool ok = transmitPollingLocked(
+        &ramWriteCommand,
+        1,
+        false,
+        true
+    );
+
+    for (int srcY = 0; ok && srcY < DOOMGENERIC_RESY; srcY += 2) {
+        const uint16_t* srcA =
+            reinterpret_cast<const uint16_t*>(
+                packed + static_cast<size_t>(srcY) * SOURCE_ROW_BYTES
+            );
+        const uint16_t* srcB = srcA + DOOMGENERIC_RESX;
+
+        uint16_t* rowA = reinterpret_cast<uint16_t*>(doomChunk);
+        uint16_t* rowADuplicate = rowA + QUALITY_PRESENT_W;
+        uint16_t* rowB = rowADuplicate + QUALITY_PRESENT_W;
+
+        expandDoomRow320To480Rgb565(srcA, rowA);
+        memcpy(
+            rowADuplicate,
+            rowA,
+            QUALITY_OUTPUT_ROW_BYTES
+        );
+        expandDoomRow320To480Rgb565(srcB, rowB);
+
+        const bool isLastChunk = srcY + 2 >= DOOMGENERIC_RESY;
+
+        ok = transmitPollingLocked(
+            doomChunk,
+            QUALITY_CHUNK_BYTES,
+            true,
+            !isLastChunk
+        );
+    }
+
+    spi_device_release_bus(extSpiDevice);
+    extTransportOk = ok;
+}
 #endif
 
 void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
@@ -464,6 +569,15 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
     ) {
         return;
     }
+
+#if DOOM_TFT_SCALE_320X200_TO_400X250_RGB565
+    if (doomDisplayMode == DoomDisplayMode::QUALITY_480X300) {
+        const uint8_t* packed =
+            reinterpret_cast<const uint8_t*>(framebuffer);
+        presentQuality480x300(packed);
+        return;
+    }
+#endif
 
     buildScaleMaps();
 

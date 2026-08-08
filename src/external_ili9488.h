@@ -37,6 +37,12 @@
 #define DOOM_PRESENT_X 40
 #define DOOM_PRESENT_Y 35
 
+enum class DoomDisplayMode : uint8_t {
+    VANILLA_400X250 = 0,
+    QUALITY_480X300 = 1,
+};
+
 bool externalTftBegin();
 void externalTftClear(uint8_t r, uint8_t g, uint8_t b);
+void externalTftSetDoomDisplayMode(DoomDisplayMode mode);
 void externalTftPresentDoomFrame(const uint32_t* framebuffer);

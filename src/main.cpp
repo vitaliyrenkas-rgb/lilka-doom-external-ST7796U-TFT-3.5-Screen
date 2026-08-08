@@ -370,12 +370,32 @@ void setup() {
     }
     char* argv[3] = {arg, arg2, arg3};
 
+    lilka::Canvas canvas;
+
+    // Select external TFT presentation mode.
+    // Keep VANILLA first so the validated df73203 behavior remains the default.
+    lilka::Menu displayMenu("Режим зображення");
+    displayMenu.addItem("VANILLA 35 (400x250)");
+    displayMenu.addItem("QUALITY (480x300)");
+    while (!displayMenu.isFinished()) {
+        displayMenu.update();
+        displayMenu.draw(&canvas);
+        lilka::display.drawCanvas(&canvas);
+    }
+    int displayMode = displayMenu.getCursor();
+    if (displayMode == 1) {
+        externalTftSetDoomDisplayMode(DoomDisplayMode::QUALITY_480X300);
+        Serial.println("[DOOM DISPLAY] QUALITY 480x300");
+    } else {
+        externalTftSetDoomDisplayMode(DoomDisplayMode::VANILLA_400X250);
+        Serial.println("[DOOM DISPLAY] VANILLA 35 400x250");
+    }
+
     // Select sound device
     lilka::Menu soundMenu("Звуковий пристрій");
     soundMenu.addItem("I2S DAC");
     soundMenu.addItem("П'єзо-динамік");
     soundMenu.addItem("Без звуку");
-    lilka::Canvas canvas;
     while (!soundMenu.isFinished()) {
         soundMenu.update();
         soundMenu.draw(&canvas);
