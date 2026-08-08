@@ -414,6 +414,94 @@ void externalTftSetDoomDisplayMode(DoomDisplayMode mode) {
     }
 }
 
+void externalTftPresentUiCanvas(
+    const uint16_t* pixels,
+    uint16_t x,
+    uint16_t y,
+    uint16_t w,
+    uint16_t h
+) {
+    if (
+        !extReady ||
+        !extTransportOk ||
+        pixels == nullptr ||
+        w == 0 ||
+        h == 0 ||
+        static_cast<uint32_t>(x) + w > EXT_TFT_W ||
+        static_cast<uint32_t>(y) + h > EXT_TFT_H
+    ) {
+        return;
+    }
+
+    const size_t rowBytes = static_cast<size_t>(w) * 2u;
+    if (rowBytes == 0 || rowBytes > DMA_CHUNK_BYTES) {
+        extTransportOk = false;
+        return;
+    }
+
+    const uint16_t rowsPerChunk =
+        static_cast<uint16_t>(DMA_CHUNK_BYTES / rowBytes);
+    if (rowsPerChunk == 0) {
+        extTransportOk = false;
+        return;
+    }
+
+    setAddressWindow(x, y, w, h);
+    if (!extTransportOk) {
+        return;
+    }
+
+    if (
+        spi_device_acquire_bus(
+            extSpiDevice,
+            portMAX_DELAY
+        ) != ESP_OK
+    ) {
+        extTransportOk = false;
+        return;
+    }
+
+    const uint8_t ramWriteCommand = 0x2C;
+    bool ok = transmitPollingLocked(
+        &ramWriteCommand,
+        1,
+        false,
+        true
+    );
+
+    for (uint16_t row = 0; ok && row < h; row += rowsPerChunk) {
+        const uint16_t rowsRemaining = h - row;
+        const uint16_t rowsThisChunk =
+            rowsRemaining < rowsPerChunk
+                ? rowsRemaining
+                : rowsPerChunk;
+        const size_t pixelCount =
+            static_cast<size_t>(rowsThisChunk) * w;
+        const uint16_t* src =
+            pixels + static_cast<size_t>(row) * w;
+
+        for (size_t i = 0; i < pixelCount; ++i) {
+            const uint16_t color = src[i];
+            doomChunk[i * 2u + 0u] =
+                static_cast<uint8_t>(color >> 8);
+            doomChunk[i * 2u + 1u] =
+                static_cast<uint8_t>(color & 0xff);
+        }
+
+        const bool isLastChunk =
+            row + rowsThisChunk >= h;
+        ok = transmitPollingLocked(
+            doomChunk,
+            pixelCount * 2u,
+            true,
+            !isLastChunk
+        );
+    }
+
+    spi_device_release_bus(extSpiDevice);
+    extTransportOk = ok;
+}
+
 static void drawSolidRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t r, uint8_t g, uint8_t b) {
     fillRect565(x, y, w, h, r, g, b);
 }
