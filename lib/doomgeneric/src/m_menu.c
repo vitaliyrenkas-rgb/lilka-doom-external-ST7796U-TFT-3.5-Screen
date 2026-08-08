@@ -1622,6 +1622,20 @@ boolean32 M_Responder (event_t* ev)
     // Take care of any messages that need input
     if (messageToPrint)
     {
+        // Lilka controls for the stock Doom quit confirmation:
+        // START  -> Y / confirm
+        // SELECT -> N / abort
+        //
+        // Keep this local to M_QuitResponse so START/SELECT retain their
+        // normal Enter/Escape mappings everywhere else.
+        if (messageNeedsInput && messageRoutine == M_QuitResponse)
+        {
+            if (key == KEY_ENTER)
+                key = key_menu_confirm;
+            else if (key == KEY_ESCAPE)
+                key = key_menu_abort;
+        }
+
 	if (messageNeedsInput)
         {
             if (key != ' ' && key != KEY_ESCAPE
