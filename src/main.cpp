@@ -271,144 +271,42 @@ void buttonHandler(lilka::Button button, bool pressed) {
     xSemaphoreGive(inputMutex);
 }
 
-static void waitStartupMenuKeysReleased() {
-    while (true) {
-        const lilka::State state = lilka::controller.peekState();
-        if (
-            !state.up.pressed &&
-            !state.down.pressed &&
-            !state.start.pressed
-        ) {
-            break;
-        }
-        delay(5);
-    }
-
-    lilka::controller.resetState();
-}
-
-static void drawExternalStartupMenu(
-    lilka::Canvas& canvas,
-    const char* title,
-    const char* const* items,
-    int itemCount,
-    int selected
-) {
-    canvas.fillScreen(lilka::colors::Black);
-
-    canvas.setFont(FONT_10x20);
-    canvas.setTextColor(lilka::colors::White);
-    canvas.drawTextAligned(
-        title,
-        200,
-        30,
-        lilka::ALIGN_CENTER,
-        lilka::ALIGN_CENTER
-    );
-    canvas.drawLine(20, 58, 380, 58, lilka::colors::White);
-
-    static constexpr int ROW_SPACING = 44;
-    const int firstRowCenter =
-        126 - ((itemCount - 1) * ROW_SPACING) / 2;
-
-    for (int i = 0; i < itemCount; ++i) {
-        const int rowCenter =
-            firstRowCenter + i * ROW_SPACING;
-
-        if (i == selected) {
-            canvas.drawRect(
-                18,
-                rowCenter - 18,
-                364,
-                36,
-                lilka::colors::White
-            );
-            canvas.drawRect(
-                19,
-                rowCenter - 17,
-                362,
-                34,
-                lilka::colors::White
-            );
-        }
-
-        canvas.drawTextAligned(
-            items[i],
-            200,
-            rowCenter,
-            lilka::ALIGN_CENTER,
-            lilka::ALIGN_CENTER
-        );
-    }
-
-    canvas.setFont(FONT_6x12);
-    canvas.drawTextAligned(
-        "ВГОРУ/ВНИЗ   START - OK",
-        200,
-        220,
-        lilka::ALIGN_CENTER,
-        lilka::ALIGN_CENTER
-    );
-
-    externalTftPresentUiCanvas(
-        canvas.getFramebuffer(),
-        40,
-        40,
-        400,
-        240
-    );
-}
-
-static int runExternalStartupMenu(
+static int runExternalLilkaMenu(
     const char* title,
     const char* const* items,
     int itemCount,
     int initialSelection
 ) {
-    lilka::Canvas canvas(400, 240);
-    int selected = initialSelection;
-
-    waitStartupMenuKeysReleased();
-    externalTftClear(0, 0, 0);
-    drawExternalStartupMenu(
-        canvas,
-        title,
-        items,
-        itemCount,
-        selected
-    );
-
-    while (true) {
-        const lilka::State state = lilka::controller.getState();
-
-        if (state.up.justPressed) {
-            selected =
-                (selected + itemCount - 1) % itemCount;
-            drawExternalStartupMenu(
-                canvas,
-                title,
-                items,
-                itemCount,
-                selected
-            );
-        } else if (state.down.justPressed) {
-            selected = (selected + 1) % itemCount;
-            drawExternalStartupMenu(
-                canvas,
-                title,
-                items,
-                itemCount,
-                selected
-            );
-        }
-
-        if (state.start.justPressed) {
-            waitStartupMenuKeysReleased();
-            return selected;
-        }
-
-        delay(5);
+    lilka::Menu menu(title);
+    for (int i = 0; i < itemCount; ++i) {
+        menu.addItem(items[i]);
     }
+
+    menu.setCursor(initialSelection);
+    // Keep native Lilka A-button activation and also accept START,
+    // which preserves the control used by the first external-TFT menu smoke.
+    menu.addActivationButton(lilka::Button::START);
+
+    lilka::Canvas canvas(400, 240);
+
+    lilka::controller.resetState();
+    externalTftClear(0, 0, 0);
+
+    while (!menu.isFinished()) {
+        menu.update();
+        menu.draw(&canvas);
+
+        externalTftPresentUiCanvas(
+            canvas.getFramebuffer(),
+            40,
+            40,
+            400,
+            240
+        );
+    }
+
+    lilka::controller.resetState();
+    return menu.getCursor();
 }
 
 void setup() {
@@ -514,7 +412,7 @@ void setup() {
         "VANILLA 35   400x250",
         "QUALITY      480x300",
     };
-    const int displayMode = runExternalStartupMenu(
+    const int displayMode = runExternalLilkaMenu(
         "РЕЖИМ ЗОБРАЖЕННЯ",
         displayItems,
         2,
@@ -534,7 +432,7 @@ void setup() {
         "П'ЄЗО-ДИНАМІК",
         "БЕЗ ЗВУКУ",
     };
-    const int soundDevice = runExternalStartupMenu(
+    const int soundDevice = runExternalLilkaMenu(
         "ЗВУКОВИЙ ПРИСТРІЙ",
         soundItems,
         3,
