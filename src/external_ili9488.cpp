@@ -1,65 +1,231 @@
 #include "external_ili9488.h"
 
-#include <SPI.h>
+#include <driver/gpio.h>
+#include <driver/spi_master.h>
+#include <esp_attr.h>
 #include <string.h>
 
 extern "C" {
 #include "doomgeneric.h"
 }
 
-static SPIClass extSpi(FSPI);
+static constexpr spi_host_device_t EXT_TFT_SPI_HOST = SPI2_HOST;
+
+// Keep every Doom bulk transfer inside one ESP-IDF DMA descriptor.
+// ESP-IDF v4.4 defines SPI_MAX_DMA_LEN as 4092 bytes.
+// Exact 3:2 vertical scaling maps two source rows -> three TFT rows:
+// 3 * 480 * 2 = 2880 bytes per transfer.
+static constexpr int DMA_SOURCE_ROWS_PER_CHUNK = 2;
+static constexpr int DMA_OUTPUT_ROWS_PER_CHUNK = 3;
+static constexpr size_t DMA_OUTPUT_ROW_BYTES =
+    static_cast<size_t>(DOOM_PRESENT_W) * 2u;
+static constexpr size_t DMA_CHUNK_BYTES =
+    static_cast<size_t>(DMA_OUTPUT_ROWS_PER_CHUNK) *
+    DMA_OUTPUT_ROW_BYTES;
+
+static spi_device_handle_t extSpiDevice = nullptr;
 static bool extReady = false;
-static bool extTransactionActive = false;
+static bool extTransportOk = true;
+
+DMA_ATTR static uint8_t fillRow[EXT_TFT_W * 2];
+DMA_ATTR static uint8_t doomChunk[DMA_CHUNK_BYTES];
 
 static bool scaleMapsReady = false;
 static uint16_t srcXMap[DOOM_PRESENT_W];
-// Offset in bytes into the proven packed RGB888 Doom framebuffer.
 static size_t srcYOffsetMap[DOOM_PRESENT_H];
 
-static inline void tftSelect() {
-    digitalWrite(EXT_TFT_CS, LOW);
+static void IRAM_ATTR extTftPreTransferCallback(spi_transaction_t* transaction) {
+    const bool dataMode =
+        reinterpret_cast<uintptr_t>(transaction->user) != 0;
+    gpio_set_level(
+        static_cast<gpio_num_t>(EXT_TFT_DC),
+        dataMode ? 1 : 0
+    );
 }
 
-static inline void tftDeselect() {
-    digitalWrite(EXT_TFT_CS, HIGH);
+static bool addSpiDevice(uint32_t hz) {
+    spi_device_interface_config_t deviceConfig = {};
+    deviceConfig.mode = 0;
+    deviceConfig.clock_speed_hz = hz;
+    deviceConfig.spics_io_num = EXT_TFT_CS;
+    deviceConfig.queue_size = 1;
+    deviceConfig.flags = SPI_DEVICE_HALFDUPLEX | SPI_DEVICE_NO_DUMMY;
+    deviceConfig.pre_cb = extTftPreTransferCallback;
+
+    return spi_bus_add_device(
+        EXT_TFT_SPI_HOST,
+        &deviceConfig,
+        &extSpiDevice
+    ) == ESP_OK;
 }
 
-static inline void tftCommandMode() {
-    digitalWrite(EXT_TFT_DC, LOW);
-}
+static bool beginSpiBus() {
+    spi_bus_config_t busConfig = {};
+    busConfig.mosi_io_num = EXT_TFT_MOSI;
+    busConfig.miso_io_num = -1;
+    busConfig.sclk_io_num = EXT_TFT_SCK;
+    busConfig.quadwp_io_num = -1;
+    busConfig.quadhd_io_num = -1;
+    busConfig.data4_io_num = -1;
+    busConfig.data5_io_num = -1;
+    busConfig.data6_io_num = -1;
+    busConfig.data7_io_num = -1;
+    busConfig.max_transfer_sz = DMA_CHUNK_BYTES;
 
-static inline void tftDataMode() {
-    digitalWrite(EXT_TFT_DC, HIGH);
-}
-
-static void beginSpiTransaction(uint32_t hz) {
-    if (extTransactionActive) {
-        extSpi.endTransaction();
+    if (
+        spi_bus_initialize(
+            EXT_TFT_SPI_HOST,
+            &busConfig,
+            SPI_DMA_CH_AUTO
+        ) != ESP_OK
+    ) {
+        return false;
     }
 
-    extSpi.beginTransaction(SPISettings(hz, MSBFIRST, SPI_MODE0));
-    extTransactionActive = true;
+    return addSpiDevice(EXT_TFT_INIT_SPI_HZ);
 }
 
-static void writeCommand(uint8_t cmd) {
-    tftSelect();
-    tftCommandMode();
-    extSpi.write(cmd);
-    tftDeselect();
-}
-
-static void writeCommandData(uint8_t cmd, const uint8_t* data, size_t len) {
-    tftSelect();
-    tftCommandMode();
-    extSpi.write(cmd);
-    if (len > 0) {
-        tftDataMode();
-        extSpi.writeBytes(data, len);
+static bool switchSpiDeviceClock(uint32_t hz) {
+    if (extSpiDevice != nullptr) {
+        if (spi_bus_remove_device(extSpiDevice) != ESP_OK) {
+            return false;
+        }
+        extSpiDevice = nullptr;
     }
-    tftDeselect();
+
+    return addSpiDevice(hz);
 }
 
-static void setAddressWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
+static bool transmitPollingLocked(
+    const void* bytes,
+    size_t len,
+    bool dataMode,
+    bool keepCsActive
+) {
+    if (
+        extSpiDevice == nullptr ||
+        bytes == nullptr ||
+        len == 0 ||
+        len > DMA_CHUNK_BYTES
+    ) {
+        extTransportOk = false;
+        return false;
+    }
+
+    spi_transaction_t transaction = {};
+    transaction.user = reinterpret_cast<void*>(dataMode ? 1U : 0U);
+    transaction.length = len * 8u;
+
+    if (keepCsActive) {
+        transaction.flags |= SPI_TRANS_CS_KEEP_ACTIVE;
+    }
+
+    if (len <= sizeof(transaction.tx_data)) {
+        transaction.flags |= SPI_TRANS_USE_TXDATA;
+        memcpy(transaction.tx_data, bytes, len);
+    } else {
+        transaction.tx_buffer = bytes;
+    }
+
+    if (
+        spi_device_polling_transmit(
+            extSpiDevice,
+            &transaction
+        ) != ESP_OK
+    ) {
+        extTransportOk = false;
+        return false;
+    }
+
+    return true;
+}
+
+static void writeCommandData(
+    uint8_t command,
+    const uint8_t* data,
+    size_t len
+) {
+    if (!extTransportOk || extSpiDevice == nullptr) {
+        return;
+    }
+
+    if (
+        spi_device_acquire_bus(
+            extSpiDevice,
+            portMAX_DELAY
+        ) != ESP_OK
+    ) {
+        extTransportOk = false;
+        return;
+    }
+
+    const bool commandOk =
+        transmitPollingLocked(&command, 1, false, len > 0);
+
+    bool dataOk = true;
+    if (commandOk && len > 0) {
+        dataOk = transmitPollingLocked(data, len, true, false);
+    }
+
+    spi_device_release_bus(extSpiDevice);
+    extTransportOk = commandOk && dataOk;
+}
+
+static void writeCommand(uint8_t command) {
+    writeCommandData(command, nullptr, 0);
+}
+
+static bool writeRepeatedRows(
+    const uint8_t* row,
+    size_t rowBytes,
+    uint16_t rowCount
+) {
+    if (!extTransportOk || extSpiDevice == nullptr) {
+        return false;
+    }
+
+    if (
+        spi_device_acquire_bus(
+            extSpiDevice,
+            portMAX_DELAY
+        ) != ESP_OK
+    ) {
+        extTransportOk = false;
+        return false;
+    }
+
+    const uint8_t ramWriteCommand = 0x2C;
+    bool ok = transmitPollingLocked(
+        &ramWriteCommand,
+        1,
+        false,
+        rowCount > 0
+    );
+
+    for (
+        uint16_t rowIndex = 0;
+        ok && rowIndex < rowCount;
+        ++rowIndex
+    ) {
+        ok = transmitPollingLocked(
+            row,
+            rowBytes,
+            true,
+            rowIndex + 1 < rowCount
+        );
+    }
+
+    spi_device_release_bus(extSpiDevice);
+    extTransportOk = ok;
+    return ok;
+}
+
+static void setAddressWindow(
+    uint16_t x,
+    uint16_t y,
+    uint16_t w,
+    uint16_t h
+) {
     const uint16_t x2 = x + w - 1;
     const uint16_t y2 = y + h - 1;
 
@@ -78,7 +244,6 @@ static void setAddressWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h) {
 
     writeCommandData(0x2A, col, sizeof(col)); // CASET
     writeCommandData(0x2B, row, sizeof(row)); // PASET
-    writeCommand(0x2C); // RAMWR
 }
 
 static inline uint16_t packRgb565(uint8_t r, uint8_t g, uint8_t b) {
@@ -95,29 +260,31 @@ static inline void storePackedRgb888AsRgb565(const uint8_t* src, uint8_t* dst) {
     dst[1] = static_cast<uint8_t>(color & 0xff);
 }
 
-static void fillRect565(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t r, uint8_t g, uint8_t b) {
+static void fillRect565(
+    uint16_t x,
+    uint16_t y,
+    uint16_t w,
+    uint16_t h,
+    uint8_t r,
+    uint8_t g,
+    uint8_t b
+) {
     if (w == 0 || h == 0) {
         return;
     }
 
-    static uint8_t row[EXT_TFT_W * 2];
     const uint16_t color = packRgb565(r, g, b);
     const uint8_t hi = static_cast<uint8_t>(color >> 8);
     const uint8_t lo = static_cast<uint8_t>(color & 0xff);
     const size_t rowBytes = static_cast<size_t>(w) * 2u;
 
     for (uint16_t px = 0; px < w; ++px) {
-        row[px * 2 + 0] = hi;
-        row[px * 2 + 1] = lo;
+        fillRow[px * 2 + 0] = hi;
+        fillRow[px * 2 + 1] = lo;
     }
 
     setAddressWindow(x, y, w, h);
-    tftSelect();
-    tftDataMode();
-    for (uint16_t py = 0; py < h; ++py) {
-        extSpi.writeBytes(row, rowBytes);
-    }
-    tftDeselect();
+    writeRepeatedRows(fillRow, rowBytes, h);
 }
 
 static void initST7796U() {
@@ -186,12 +353,10 @@ static void initST7796U() {
 }
 
 bool externalTftBegin() {
-    pinMode(EXT_TFT_CS, OUTPUT);
     pinMode(EXT_TFT_DC, OUTPUT);
     pinMode(EXT_TFT_RST, OUTPUT);
     pinMode(EXT_TFT_BL, INPUT); // BL is externally powered; never drive it.
 
-    digitalWrite(EXT_TFT_CS, HIGH);
     digitalWrite(EXT_TFT_DC, HIGH);
     digitalWrite(EXT_TFT_RST, HIGH);
 
@@ -201,19 +366,28 @@ bool externalTftBegin() {
     digitalWrite(EXT_TFT_RST, HIGH);
     delay(150);
 
-    extSpi.begin(EXT_TFT_SCK, -1, EXT_TFT_MOSI, EXT_TFT_CS);
-    beginSpiTransaction(EXT_TFT_INIT_SPI_HZ);
+    extTransportOk = beginSpiBus();
+    if (!extTransportOk) {
+        return false;
+    }
 
     initST7796U();
+    if (!extTransportOk) {
+        return false;
+    }
 
-    beginSpiTransaction(EXT_TFT_BULK_SPI_HZ);
+    if (!switchSpiDeviceClock(EXT_TFT_BULK_SPI_HZ)) {
+        extTransportOk = false;
+        return false;
+    }
+
     extReady = true;
     externalTftClear(0, 0, 0);
-    return true;
+    return extTransportOk;
 }
 
 void externalTftClear(uint8_t r, uint8_t g, uint8_t b) {
-    if (!extReady) {
+    if (!extReady || !extTransportOk) {
         return;
     }
 
@@ -230,13 +404,19 @@ static void buildScaleMaps() {
     }
 
     for (uint16_t x = 0; x < DOOM_PRESENT_W; ++x) {
-        srcXMap[x] = (static_cast<uint32_t>(x) * DOOMGENERIC_RESX) / DOOM_PRESENT_W;
+        srcXMap[x] =
+            (static_cast<uint32_t>(x) * DOOMGENERIC_RESX) /
+            DOOM_PRESENT_W;
     }
 
-    const size_t srcStride = static_cast<size_t>(DOOMGENERIC_RESX) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
+    const size_t srcStride =
+        static_cast<size_t>(DOOMGENERIC_RESX) *
+        DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
 
     for (uint16_t y = 0; y < DOOM_PRESENT_H; ++y) {
-        const uint16_t sy = (static_cast<uint32_t>(y) * DOOMGENERIC_RESY) / DOOM_PRESENT_H;
+        const uint16_t sy =
+            (static_cast<uint32_t>(y) * DOOMGENERIC_RESY) /
+            DOOM_PRESENT_H;
         srcYOffsetMap[y] = static_cast<size_t>(sy) * srcStride;
     }
 
@@ -256,8 +436,6 @@ static inline void expandDoomRow320To480Rgb565(
     const uint16_t* src,
     uint16_t* dst
 ) {
-    // Exact 3:2 mapping: two source pixels become three TFT pixels
-    // (0,0,1). Source words are already in wire byte order.
     for (int group = 0; group < 160; ++group) {
         const uint16_t p0 = src[0];
         const uint16_t p1 = src[1];
@@ -273,7 +451,11 @@ static inline void expandDoomRow320To480Rgb565(
 #endif
 
 void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
-    if (!extReady || framebuffer == nullptr) {
+    if (
+        !extReady ||
+        !extTransportOk ||
+        framebuffer == nullptr
+    ) {
         return;
     }
 
@@ -294,79 +476,86 @@ void externalTftPresentDoomFrame(const uint32_t* framebuffer) {
         barsDrawn = true;
     }
 
-    const uint8_t* packed = reinterpret_cast<const uint8_t*>(framebuffer);
+    const uint8_t* packed =
+        reinterpret_cast<const uint8_t*>(framebuffer);
 
-    setAddressWindow(DOOM_PRESENT_X, DOOM_PRESENT_Y, DOOM_PRESENT_W, DOOM_PRESENT_H);
-
-    tftSelect();
-    tftDataMode();
+    setAddressWindow(
+        DOOM_PRESENT_X,
+        DOOM_PRESENT_Y,
+        DOOM_PRESENT_W,
+        DOOM_PRESENT_H
+    );
+    if (!extTransportOk) {
+        return;
+    }
 
 #if DOOM_TFT_SCALE_320X200_TO_480X300_RGB565
-    // Exact 3:2 vertical mapping. Eight source rows become twelve TFT rows:
-    // A,A,B, C,C,D, E,E,F, G,G,H. One 11520-byte SPI call per chunk.
-    static constexpr int SOURCE_ROWS_PER_CHUNK = 8;
-    static constexpr int OUTPUT_ROWS_PER_CHUNK = 12;
     static constexpr size_t SOURCE_ROW_BYTES =
-        static_cast<size_t>(DOOMGENERIC_RESX) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
-    static constexpr size_t OUTPUT_ROW_BYTES = static_cast<size_t>(DOOM_PRESENT_W) * 2u;
-    alignas(4) static uint8_t rows[OUTPUT_ROWS_PER_CHUNK * OUTPUT_ROW_BYTES];
+        static_cast<size_t>(DOOMGENERIC_RESX) *
+        DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
 
-    for (int srcY = 0; srcY < DOOMGENERIC_RESY; srcY += SOURCE_ROWS_PER_CHUNK) {
-        int outputRow = 0;
-
-        for (int pair = 0; pair < SOURCE_ROWS_PER_CHUNK; pair += 2) {
-            const uint16_t* srcA = reinterpret_cast<const uint16_t*>(
-                packed + static_cast<size_t>(srcY + pair) * SOURCE_ROW_BYTES
-            );
-            const uint16_t* srcB = srcA + DOOMGENERIC_RESX;
-
-            uint16_t* rowA = reinterpret_cast<uint16_t*>(
-                rows + static_cast<size_t>(outputRow) * OUTPUT_ROW_BYTES
-            );
-            uint16_t* rowADuplicate = rowA + DOOM_PRESENT_W;
-            uint16_t* rowB = rowADuplicate + DOOM_PRESENT_W;
-
-            expandDoomRow320To480Rgb565(srcA, rowA);
-            memcpy(rowADuplicate, rowA, OUTPUT_ROW_BYTES);
-            expandDoomRow320To480Rgb565(srcB, rowB);
-
-            outputRow += 3;
-        }
-
-        extSpi.writeBytes(rows, OUTPUT_ROWS_PER_CHUNK * OUTPUT_ROW_BYTES);
+    if (
+        spi_device_acquire_bus(
+            extSpiDevice,
+            portMAX_DELAY
+        ) != ESP_OK
+    ) {
+        extTransportOk = false;
+        return;
     }
-#else
-    static constexpr int CHUNK_ROWS = 4;
-    alignas(4) static uint8_t rows[CHUNK_ROWS * DOOM_PRESENT_W * 2];
-    const size_t rowBytes = static_cast<size_t>(DOOM_PRESENT_W) * 2u;
 
-    for (int y = 0; y < DOOM_PRESENT_H; y += CHUNK_ROWS) {
-        const int remainingRows = DOOM_PRESENT_H - y;
-        const int rowsThisChunk = (remainingRows < CHUNK_ROWS) ? remainingRows : CHUNK_ROWS;
+    const uint8_t ramWriteCommand = 0x2C;
+    bool ok = transmitPollingLocked(
+        &ramWriteCommand,
+        1,
+        false,
+        true
+    );
 
-        for (int chunkY = 0; chunkY < rowsThisChunk; ++chunkY) {
-            const uint16_t outY = static_cast<uint16_t>(y + chunkY);
-            const uint8_t* src = packed + srcYOffsetMap[outY];
-            uint16_t* row = reinterpret_cast<uint16_t*>(
-                rows + static_cast<size_t>(chunkY) * rowBytes
+    for (
+        int srcY = 0;
+        ok && srcY < DOOMGENERIC_RESY;
+        srcY += DMA_SOURCE_ROWS_PER_CHUNK
+    ) {
+        const uint16_t* srcA =
+            reinterpret_cast<const uint16_t*>(
+                packed +
+                static_cast<size_t>(srcY) *
+                SOURCE_ROW_BYTES
             );
+        const uint16_t* srcB =
+            srcA + DOOMGENERIC_RESX;
 
-#if DOOMGENERIC_FRAMEBUFFER_RGB565_WIRE_ORDER
-            const uint16_t* srcPixels = reinterpret_cast<const uint16_t*>(src);
-            for (int x = 0; x < DOOM_PRESENT_W; ++x) {
-                row[x] = srcPixels[srcXMap[x]];
-            }
-#else
-            for (int x = 0; x < DOOM_PRESENT_W; ++x) {
-                const uint8_t* sp = src + static_cast<size_t>(srcXMap[x]) * DOOMGENERIC_FRAMEBUFFER_BYTES_PER_PIXEL;
-                storePackedRgb888AsRgb565(sp, reinterpret_cast<uint8_t*>(row + x));
-            }
-#endif
-        }
+        uint16_t* rowA =
+            reinterpret_cast<uint16_t*>(doomChunk);
+        uint16_t* rowADuplicate =
+            rowA + DOOM_PRESENT_W;
+        uint16_t* rowB =
+            rowADuplicate + DOOM_PRESENT_W;
 
-        extSpi.writeBytes(rows, rowBytes * static_cast<size_t>(rowsThisChunk));
+        expandDoomRow320To480Rgb565(srcA, rowA);
+        memcpy(
+            rowADuplicate,
+            rowA,
+            DMA_OUTPUT_ROW_BYTES
+        );
+        expandDoomRow320To480Rgb565(srcB, rowB);
+
+        const bool isLastChunk =
+            srcY + DMA_SOURCE_ROWS_PER_CHUNK >=
+            DOOMGENERIC_RESY;
+
+        ok = transmitPollingLocked(
+            doomChunk,
+            DMA_CHUNK_BYTES,
+            true,
+            !isLastChunk
+        );
     }
-#endif
 
-    tftDeselect();
+    spi_device_release_bus(extSpiDevice);
+    extTransportOk = ok;
+#else
+    extTransportOk = false;
+#endif
 }

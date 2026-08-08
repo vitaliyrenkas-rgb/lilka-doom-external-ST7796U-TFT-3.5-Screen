@@ -25,9 +25,9 @@
 #define EXT_TFT_W    480
 #define EXT_TFT_H    320
 
-// Validated ST7796U timing from FFC CORE #013/#015B.
+// Validated ST7796U init timing; bulk path uses ESP32-S3 GP-SPI at 80 MHz.
 #define EXT_TFT_INIT_SPI_HZ 15000000UL
-#define EXT_TFT_BULK_SPI_HZ 125000000UL
+#define EXT_TFT_BULK_SPI_HZ 80000000UL
 
 // Doom native framebuffer: 320x200 packed wire-order RGB565.
 // Full-width ST7796U test: exact 3:2 horizontal and 3:2 vertical
