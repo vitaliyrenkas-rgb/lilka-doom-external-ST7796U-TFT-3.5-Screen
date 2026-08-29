@@ -1,37 +1,76 @@
-# Lilka multiboot Doom — quick path
+# Lilka multiboot Doom — ST7796U release quick path
 
-This project builds a multiboot binary named `doom.bin`. Do not upload it over KeiraOS as the main firmware.
+This project builds a multiboot binary named `doom.bin`.
 
-1. Open this folder in VSCode / PlatformIO.
-2. Run PlatformIO Build.
-3. After build, `move_firmware.py` copies the firmware to the project root as `doom.bin`.
-4. Copy `doom.bin` to the SD card, for example:
+**Do not flash it over KeiraOS as the main firmware.**
 
-   `/apps/doom/doom.bin`
+## Build
 
-5. Put a legal WAD in the same folder, for example:
+Open the project in VS Code / PlatformIO and run:
 
-   `/apps/doom/doom.wad`
+```bash
+pio run -e v2
+```
 
-6. Boot normal KeiraOS and launch Doom through multiboot / launcher.
+After a successful build, `move_firmware.py` copies the firmware to the project root as:
 
-Expected serial markers after Doom starts:
+```text
+doom.bin
+```
 
-`[DOOM BOOT]`
-`[DOOM TFT]`
-`[DOOM MULTIBOOT]`
-`[DOOM WAD]`
-`[DOOM CREATE]`
-`[DOOM RUN]`
+## SD layout
 
-External TFT mapping used here:
+Put `doom.bin` and a legally obtained Doom WAD in the same directory, for example:
 
-SCK  -> GPIO12
-MOSI -> GPIO14
-CS   -> GPIO48
-DC   -> RX
-RST  -> TX
-MISO -> not connected
+```text
+/apps/doom/doom.bin
+/apps/doom/doom.wad
+```
 
-External output geometry: Doom 320x200 -> ILI9488 480x300 with 10 px black bars top/bottom.
-Rotation/MADCTL currently set to `0x88` after the first upside-down visual test.
+The launcher path may be different; the requirement is that `doom.bin` and `doom*.wad` are in the same folder.
+
+Doom uses `lilka::multiboot.getFirmwarePath()` and searches for `doom*.wad` next to the launched binary.
+
+## Launch
+
+1. Boot normal KeiraOS.
+2. Launch `doom.bin` through the multiboot / file launcher.
+3. Choose display mode:
+   - `VANILLA 35   400x250`
+   - `QUALITY      480x300`
+4. Choose sound device:
+   - `I2S DAC`
+   - `П'ЄЗО-ДИНАМІК`
+   - `БЕЗ ЗВУКУ`
+5. Play.
+
+## Exit back to KeiraOS
+
+Use the stock Doom menu:
+
+```text
+Quit Game → Do you wanna exit to DOS? Y/N
+```
+
+On Lilka:
+
+- `START` = Yes / exit to KeiraOS;
+- `SELECT` = No / cancel.
+
+## External ST7796U mapping
+
+| TFT | GPIO |
+|---|---:|
+| SCK | 12 |
+| MOSI | 14 |
+| CS | 48 |
+| DC | 44 / RX |
+| RST | 47 |
+| MISO | unused |
+| BL | external 5 V |
+
+Final Doom bulk SPI is 80 MHz. The wider FFC/ST7796U system path has separately been validated up to 125 MHz in KeiraOS testing.
+
+## WAD policy
+
+WAD files are not included in this repository/package. See `WAD_ASSETS.md`.
